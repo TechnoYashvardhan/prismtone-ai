@@ -1,0 +1,32 @@
+# Environment & Secrets (NEVER commit API keys)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+*.local
+npm-debug.log*
+
+# OS / Editor / Temp Archives
+.DS_Store
+Thumbs.db
+ai-prompt-governance-kit.zip
