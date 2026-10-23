@@ -67,6 +67,19 @@ DEMO_PRESETS = [
 ]
 
 
+@app.get("/")
+def root():
+    """Root landing endpoint for cloud deployment verification."""
+    return {
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+        "status": "online",
+        "docs_url": "/docs",
+        "health_url": "/health",
+        "model": settings.GEMINI_MODEL,
+    }
+
+
 @app.get("/health")
 def health_check():
     """Health and AI model status endpoint."""

@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: prismtone-api
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: models/gemini-3.6-flash
+      - key: GEMINI_FALLBACK_MODEL
+        value: models/gemini-3.5-flash-lite
+      - key: DEBUG
+        value: "False"

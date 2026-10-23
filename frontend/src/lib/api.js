@@ -4,6 +4,7 @@
  */
 
 const REQUEST_TIMEOUT_MS = 30000;
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(message, { status = 0, offline = false } = {}) {
@@ -23,7 +24,8 @@ async function request(path, { method = 'GET', body } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const resp = await fetch(path, {
+    const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+    const resp = await fetch(url, {
       method,
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
