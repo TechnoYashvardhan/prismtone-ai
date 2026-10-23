@@ -1,1247 +1,818 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Sparkles, Copy, Check, RotateCcw, ShieldCheck, AlertTriangle,
-  Volume2, Sliders, Eye, FileText, Zap, Lock, RefreshCw,
-  Compass, Search, Cpu
+  Sparkles, Sliders, ShieldCheck, Lock, Mic, Square, RotateCcw,
+  Download, Printer, Plus, Activity, Radar, GitCompareArrows,
+  Search, History, AlertTriangle, Send, Copy, Check, Info, FileText
 } from 'lucide-react';
 
-const PRESETS = [
-  {
-    id: "vibeathon_official",
-    title: "⚡ Vibeathon Official Demo",
-    subtitle: "Production server outage (blame -> collaboration)",
-    draft: "Server went down, it's Raj's fault, fix by Friday."
-  },
-  {
-    id: "student_prof",
-    title: "🎓 Student to Professor",
-    subtitle: "Late AI assignment extension request",
-    draft: "Missed the deadline for the AI lab because my laptop died. Can I submit tomorrow?"
-  },
-  {
-    id: "placement_hr",
-    title: "💼 Placement HR Follow-Up",
-    subtitle: "Campus drive post-interview check-in",
-    draft: "Interview was last week, nobody emailed me yet. Are you offering me the job or not?"
-  },
-  {
-    id: "manager_feedback",
-    title: "👔 Manager to Junior Engineer",
-    subtitle: "Constructive feedback without demotivating",
-    draft: "The presentation was messy, you clearly didn't practice, redo the numbers before tomorrow."
-  }
-];
+import {
+  BUILT_IN_PERSONAS,
+  PRESETS,
+  DECODER_PRESETS,
+  CHANNELS,
+  LENGTHS,
+  LANGUAGES,
+  SLIDERS,
+  DEFAULT_SLIDERS,
+  MAX_DRAFT_CHARS,
+  DEMO_DRAFT
+} from './constants';
 
-const CHANNELS = [
-  { id: 'email', label: 'Email', icon: '✉️' },
-  { id: 'slack', label: 'Slack', icon: '💬' },
-  { id: 'whatsapp', label: 'WhatsApp', icon: '📱' },
-  { id: 'linkedin', label: 'LinkedIn', icon: '💼' },
-  { id: 'sms', label: 'SMS', icon: '📲' }
-];
+import { api } from './lib/api';
+import { usePersistentState, useHistory } from './lib/storage';
+import { useSpeechInput, useSpeaker } from './lib/speech';
+import { buildMarkdownReport, downloadTextFile, printReport, copyText } from './lib/export';
+import { buildPersonaRegistry, personaColor, slidersToTarget } from './lib/personas';
 
-const LENGTHS = [
-  { id: 'one_liner', label: 'One-Liner' },
-  { id: 'short', label: 'Short' },
-  { id: 'standard', label: 'Standard' }
-];
-
-const LANGUAGES = [
-  { id: 'en', label: 'English', flag: '🇬🇧' },
-  { id: 'hinglish', label: 'Hinglish', flag: '🇮🇳' },
-  { id: 'hi', label: 'Hindi', flag: '🇮🇳' }
-];
+import { useToasts, ToastStack } from './components/Toasts';
+import PersonaCard, { PersonaCardSkeleton } from './components/PersonaCard';
+import InsightsPanel from './components/InsightsPanel';
+import CompareView from './components/CompareView';
+import HistoryPanel from './components/HistoryPanel';
+import CustomPersonaModal from './components/CustomPersonaModal';
 
 export default function App() {
+  const { toasts, notify } = useToasts();
+  const history = useHistory();
+
+  // Navigation tab: 'generator' | 'insights' | 'compare' | 'decoder' | 'history'
   const [activeTab, setActiveTab] = useState('generator');
-  const [draft, setDraft] = useState("Server went down, it's Raj's fault, fix by Friday.");
+
+  // Input states
+  const [draft, setDraft] = useState(DEMO_DRAFT);
   const [channel, setChannel] = useState('email');
   const [length, setLength] = useState('standard');
   const [language, setLanguage] = useState('en');
   const [privacyMode, setPrivacyMode] = useState(true);
   const [slidersOpen, setSlidersOpen] = useState(false);
-  const [sliders, setSliders] = useState({ formality: 6, warmth: 5, brevity: 7, directness: 8, humor: 2 });
+  const [sliders, setSliders] = useState(DEFAULT_SLIDERS);
 
+  // Custom Personas & Selection
+  const [customPersonas, setCustomPersonas] = usePersistentState('prismtone.custom_personas.v1', []);
+  const [customModalOpen, setCustomModalOpen] = useState(false);
+  const [selectedPersonaIds, setSelectedPersonaIds] = useState(['executive', 'peer', 'legal', 'gen_z']);
+
+  // Results & View modes
   const [loading, setLoading] = useState(false);
-  const [regeneratingId, setRegeneratingId] = useState(null);
   const [results, setResults] = useState(null);
-  const [viewModes, setViewModes] = useState({});
-  const [expandedFacts, setExpandedFacts] = useState({});
+  const [regeneratingId, setRegeneratingId] = useState(null);
+  const [viewModes, setViewModes] = useState({}); // { [personaId]: 'clean' | 'diff' }
+  const [expandedFacts, setExpandedFacts] = useState({}); // { [personaId]: boolean }
   const [copiedId, setCopiedId] = useState(null);
-  const [speakingId, setSpeakingId] = useState(null);
 
   // Decoder State (Reverse Mode)
-  const [decoderInput, setDecoderInput] = useState("Per my last email, please fix this ASAP or I'll have to escalate to the VP.");
-  const [decoderResult, setDecoderResult] = useState(null);
+  const [decoderInput, setDecoderInput] = useState(DECODER_PRESETS[0]);
   const [decoderLoading, setDecoderLoading] = useState(false);
+  const [decoderResult, setDecoderResult] = useState(null);
+  const [copiedReplyIdx, setCopiedReplyIdx] = useState(null);
 
+  // Persona registry lookup (covers built-ins + custom)
+  const registry = useMemo(() => buildPersonaRegistry(customPersonas), [customPersonas]);
+
+  // Audio / Speech Input & Output
+  const speechLang = LANGUAGES.find((l) => l.id === language)?.speech || 'en-IN';
+  const speechInput = useSpeechInput({
+    lang: speechLang,
+    onFinalText: (finalText) => {
+      setDraft((prev) => (prev ? `${prev.trim()} ${finalText}` : finalText));
+      notify('Voice input appended to draft!', 'info');
+    }
+  });
+
+  const speaker = useSpeaker();
+
+  // Keyboard shortcut: Ctrl+Enter / Cmd+Enter to transform
   useEffect(() => {
-    handleTransform();
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        if (activeTab === 'generator') {
+          e.preventDefault();
+          handleTransform();
+        } else if (activeTab === 'decoder') {
+          e.preventDefault();
+          handleDecode();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  });
+
+  // Initial transform on load
+  useEffect(() => {
+    handleTransform(DEMO_DRAFT);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleTransform(customDraft = null) {
-    const textToTransform = customDraft !== null ? customDraft : draft;
-    if (!textToTransform.trim()) return;
+  // Primary Transform Handler
+  async function handleTransform(textOverride = null) {
+    const textToRun = textOverride !== null ? textOverride : draft;
+    if (!textToRun.trim()) {
+      notify('Please enter a draft to transform.', 'error');
+      return;
+    }
 
     setLoading(true);
     try {
-      const resp = await fetch('/api/v1/transform', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          draft: textToTransform,
-          personas: ['executive', 'peer', 'legal', 'gen_z'],
-          channel,
-          length,
-          language,
-          privacy_mode: privacyMode,
-          sliders
-        })
+      const payload = {
+        draft: textToRun,
+        personas: selectedPersonaIds.length > 0 ? selectedPersonaIds : ['executive', 'peer', 'legal', 'gen_z'],
+        channel,
+        length,
+        language,
+        privacy_mode: privacyMode,
+        sliders: slidersOpen ? sliders : DEFAULT_SLIDERS,
+        custom_personas: customPersonas
+      };
+
+      const resp = await api.transform(payload);
+      setResults(resp);
+
+      // Save to local history
+      history.add({
+        draft: textToRun,
+        channel,
+        language,
+        result: resp
       });
 
-      if (resp.ok) {
-        const data = await resp.json();
-        setResults(data);
-      } else {
-        generateLocalFallback(textToTransform);
-      }
+      notify(`Transformed across ${Object.keys(resp.results).length} personas via ${resp.model_used}`, 'success');
     } catch (err) {
-      console.warn("API unavailable, falling back to simulated engine", err);
-      generateLocalFallback(textToTransform);
+      console.error('Transform error:', err);
+      notify(err.message || 'Transform failed. Check your network or API quota.', 'error');
     } finally {
       setLoading(false);
     }
   }
 
+  // Single-Persona Retry
   async function handleRegenerateSingle(personaId) {
     if (!draft.trim()) return;
     setRegeneratingId(personaId);
     try {
-      const resp = await fetch('/api/v1/transform', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          draft,
-          personas: [personaId],
-          channel,
-          length,
-          language,
-          privacy_mode: privacyMode,
-          sliders
-        })
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.results && data.results[personaId]) {
-          setResults(prev => prev ? {
-            ...prev,
-            ai_engine: data.ai_engine,
-            model_used: data.model_used,
-            processing_time_ms: data.processing_time_ms,
-            results: {
-              ...prev.results,
-              [personaId]: data.results[personaId]
-            }
-          } : data);
-        }
+      const payload = {
+        draft,
+        personas: [personaId],
+        channel,
+        length,
+        language,
+        privacy_mode: privacyMode,
+        sliders: slidersOpen ? sliders : DEFAULT_SLIDERS,
+        custom_personas: customPersonas
+      };
+
+      const resp = await api.transform(payload);
+      if (resp.results && resp.results[personaId]) {
+        setResults((prev) => (prev ? {
+          ...prev,
+          ai_engine: resp.ai_engine,
+          model_used: resp.model_used,
+          processing_time_ms: resp.processing_time_ms,
+          results: {
+            ...prev.results,
+            [personaId]: resp.results[personaId]
+          }
+        } : resp));
+        notify(`Regenerated ${registry[personaId]?.name || personaId}!`, 'success');
       }
     } catch (err) {
-      console.warn("Single regenerate failed", err);
+      notify(`Retry failed: ${err.message}`, 'error');
     } finally {
       setRegeneratingId(null);
     }
   }
 
-  function generateLocalFallback(text) {
-    setResults({
-      original_text: text,
-      processing_time_ms: 12.4,
-      ai_engine: 'offline_fallback',
-      model_used: 'heuristic-v1',
-      privacy_masked: privacyMode && /Raj|Priya|Amit/i.test(text),
-      masked_entities_count: 1,
-      results: {
-        executive: {
-          persona_id: 'executive',
-          persona_name: 'Executive C-Level',
-          tagline: 'Outcome-first, 2-3 crisp lines, zero fluff, clear deadlines',
-          rewrite: 'The production server experienced downtime. An emergency patch is currently being deployed to restore full redundancy, with the final resolution targeted for completion by Friday EOD.',
-          subject_line: 'Status Update: Production Outage & Friday Recovery Milestone',
-          metrics: {
-            formality: 9.1,
-            warmth: 3.5,
-            directness: 9.4,
-            reading_grade: 11.2,
-            reading_level_label: 'High School / Professional',
-            change_score: 66.0,
-            word_count: 26,
-            length_change_pct: 188.0
-          },
-          facts_found: [
-            { text: 'Friday', category: 'date', status: 'preserved' },
-            { text: 'server down', category: 'commitment', status: 'preserved' }
-          ],
-          fact_guard_status: 'green',
-          risk_flags: ['Blame language completely eliminated'],
-          change_notes: [
-            'Moved resolution timeline (Friday) to the forefront for executive visibility',
-            'Replaced individual blame with systemic remediation status'
-          ],
-          diff_tokens: [
-            { type: 'deleted', text: 'Server went down,' },
-            { type: 'added', text: 'The production server experienced downtime.' },
-            { type: 'deleted', text: " it's Raj's fault, fix" },
-            { type: 'added', text: ' An emergency patch is currently being deployed to restore full redundancy, with the final resolution targeted for completion' },
-            { type: 'unchanged', text: ' by Friday' },
-            { type: 'added', text: ' EOD.' }
-          ]
-        },
-        peer: {
-          persona_id: 'peer',
-          persona_name: 'Supportive Peer',
-          tagline: 'Warm, constructive, collaborative, frames critique as mutual growth',
-          rewrite: "Hey team, appreciate everyone rallying around the recent server issue. Raj is taking the lead on troubleshooting the root cause, and we're on track to wrap up fixes together by Friday. Let me know how I can help!",
-          subject_line: 'Quick check-in on the server fix for Friday',
-          metrics: {
-            formality: 5.5,
-            warmth: 8.9,
-            directness: 6.8,
-            reading_grade: 7.4,
-            reading_level_label: 'Standard Public',
-            change_score: 72.4,
-            word_count: 36,
-            length_change_pct: 300.0
-          },
-          facts_found: [
-            { text: 'Friday', category: 'date', status: 'preserved' },
-            { text: 'Raj', category: 'name', status: 'preserved' }
-          ],
-          fact_guard_status: 'green',
-          risk_flags: [],
-          change_notes: [
-            'Framed the incident as a collaborative team effort',
-            'Positioned Raj as leading the fix rather than bearing blame'
-          ],
-          diff_tokens: [
-            { type: 'added', text: 'Hey team, appreciate everyone rallying around the recent ' },
-            { type: 'unchanged', text: 'server ' },
-            { type: 'added', text: 'issue. ' },
-            { type: 'unchanged', text: 'Raj ' },
-            { type: 'added', text: "is taking the lead on troubleshooting the root cause, and we're on track to wrap up fixes together " },
-            { type: 'unchanged', text: 'by Friday. ' },
-            { type: 'added', text: 'Let me know how I can help!' }
-          ]
-        },
-        legal: {
-          persona_id: 'legal',
-          persona_name: 'Legal & Compliance',
-          tagline: 'Neutral, legally sound, factual, zero emotive blame or over-promises',
-          rewrite: 'We hereby record that a server disruption occurred. A technical review is underway, and corrective measures are scheduled for implementation on or before Friday. No warranties beyond standard SLA are extended.',
-          subject_line: 'Notification of Service Interruption and Scheduled Rectification',
-          metrics: {
-            formality: 9.8,
-            warmth: 2.1,
-            directness: 7.9,
-            reading_grade: 12.8,
-            reading_level_label: 'Grade 12+ (Executive / Academic)',
-            change_score: 84.1,
-            word_count: 29,
-            length_change_pct: 222.0
-          },
-          facts_found: [
-            { text: 'Friday', category: 'date', status: 'preserved' }
-          ],
-          fact_guard_status: 'green',
-          risk_flags: ['Removed personal culpability to eliminate legal vulnerability'],
-          change_notes: [
-            'Stripped all speculative and personal blame to prevent liability exposure',
-            'Established precise date commitment without emotive qualifiers'
-          ],
-          diff_tokens: [
-            { type: 'added', text: 'We hereby record that a ' },
-            { type: 'unchanged', text: 'server ' },
-            { type: 'added', text: 'disruption occurred. A technical review is underway, and corrective measures are scheduled for implementation on or before ' },
-            { type: 'unchanged', text: 'Friday. ' },
-            { type: 'added', text: 'No warranties beyond standard SLA are extended.' }
-          ]
-        },
-        gen_z: {
-          persona_id: 'gen_z',
-          persona_name: 'Gen-Z Hype',
-          tagline: 'Energetic, punchy, modern office slang, high vibe yet work-ready',
-          rewrite: "Server took a quick nap, ngl! But no stress — Raj and the squad are already on the fix and we'll be totally locked in by Friday. We got this!",
-          subject_line: 'Server downtime update — we bounce back Friday!',
-          metrics: {
-            formality: 2.4,
-            warmth: 8.6,
-            directness: 7.5,
-            reading_grade: 5.6,
-            reading_level_label: 'Grade 6 (Casual & Punchy)',
-            change_score: 79.0,
-            word_count: 28,
-            length_change_pct: 211.0
-          },
-          facts_found: [
-            { text: 'Friday', category: 'date', status: 'preserved' },
-            { text: 'Raj', category: 'name', status: 'preserved' }
-          ],
-          fact_guard_status: 'green',
-          risk_flags: [],
-          change_notes: [
-            "Replaced technical downtime with playful colloquialism ('took a quick nap')",
-            'Turned individual blame into a supportive shoutout'
-          ],
-          diff_tokens: [
-            { type: 'unchanged', text: 'Server ' },
-            { type: 'added', text: 'took a quick nap, ngl! But no stress — ' },
-            { type: 'unchanged', text: 'Raj ' },
-            { type: 'added', text: "and the squad are already on the fix and we'll be totally locked in " },
-            { type: 'unchanged', text: 'by Friday. ' },
-            { type: 'added', text: 'We got this!' }
-          ]
-        }
-      }
-    });
-  }
+  // Tone Decoder (Reverse Mode)
+  async function handleDecode(incomingOverride = null) {
+    const textToDecode = incomingOverride !== null ? incomingOverride : decoderInput;
+    if (!textToDecode.trim()) return;
 
-  async function handleDecode() {
-    if (!decoderInput.trim()) return;
     setDecoderLoading(true);
     try {
-      const resp = await fetch('/api/v1/decode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ incoming_text: decoderInput })
-      });
-      if (resp.ok) {
-        setDecoderResult(await resp.json());
-      } else {
-        fallbackDecode();
-      }
-    } catch {
-      fallbackDecode();
+      const resp = await api.decode(textToDecode);
+      setDecoderResult(resp);
+      notify('Decoded subtext and tactical responses ready!', 'success');
+    } catch (err) {
+      notify(`Decoder error: ${err.message}`, 'error');
     } finally {
       setDecoderLoading(false);
     }
   }
 
-  function fallbackDecode() {
-    setDecoderResult({
-      dominant_tone: "Guarded / Mildly Frustrated",
-      formality_score: 7.2,
-      urgency_level: "Critical",
-      hidden_subtext: "Frustration: The sender feels you ignored earlier instructions. High-priority time deadline detected.",
-      sentiment: "Passive-Aggressive",
-      ai_engine: "offline_fallback",
-      model_used: "heuristic-v1",
-      key_signals: [
-        'Used "Per my last email" indicating repeated request',
-        'Escalation threat ("escalate to VP") indicating loss of patience'
-      ],
-      suggested_reply_strategies: [
-        {
-          title: "De-escalate & Clarify (Supportive)",
-          vibe: "Calm, acknowledging, and solution-focused",
-          recommended_snippet: "Thanks for following up. You're completely right on this. I am on it right now and will deliver the complete fix by 3 PM today."
-        },
-        {
-          title: "Firm & Factual (Executive)",
-          vibe: "Concise, outcome-oriented, zero fluff",
-          recommended_snippet: "Acknowledged. The root cause is identified and resolution will be deployed by EOD. Direct update to follow."
-        },
-        {
-          title: "Detailed & Documented (Compliance)",
-          vibe: "Thorough, neutral, and reference-backed",
-          recommended_snippet: "Receipt confirmed. In accordance with the previous milestone, the fix is in final verification and will be completed within scheduled timeline."
-        }
-      ]
-    });
-  }
-
-  function copyToClipboard(text, id) {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  }
-
-  function speakText(text, id) {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      if (speakingId === id) {
-        setSpeakingId(null);
-        return;
-      }
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.onend = () => setSpeakingId(null);
-      setSpeakingId(id);
-      window.speechSynthesis.speak(utterance);
+  // Copy helper
+  const handleCopyCard = async (personaId, text) => {
+    const ok = await copyText(text);
+    if (ok) {
+      setCopiedId(personaId);
+      notify('Copied rewrite to clipboard!', 'success');
+      setTimeout(() => setCopiedId(null), 2000);
     }
-  }
+  };
 
-  const activeModelDisplay = results?.ai_engine === 'gemini'
-    ? (results.model_used || 'gemini-3.6-flash').replace('models/', '')
-    : null;
+  const handleCopyReply = async (index, text) => {
+    const ok = await copyText(text);
+    if (ok) {
+      setCopiedReplyIdx(index);
+      notify('Copied reply snippet!', 'success');
+      setTimeout(() => setCopiedReplyIdx(null), 2000);
+    }
+  };
+
+  // Custom persona management
+  const handleAddCustomPersona = (p) => {
+    setCustomPersonas((prev) => [...prev, p]);
+    setSelectedPersonaIds((prev) => [...prev, p.id]);
+  };
+
+  const handleDeleteCustomPersona = (id) => {
+    setCustomPersonas((prev) => prev.filter((p) => p.id !== id));
+    setSelectedPersonaIds((prev) => prev.filter((pid) => pid !== id));
+    notify('Custom persona removed.', 'info');
+  };
+
+  // Toggle selection chip
+  const togglePersonaSelection = (id) => {
+    setSelectedPersonaIds((prev) => {
+      if (prev.includes(id)) {
+        if (prev.length === 1) {
+          notify('Select at least 1 persona.', 'error');
+          return prev;
+        }
+        return prev.filter((pid) => pid !== id);
+      }
+      return [...prev, id];
+    });
+  };
+
+  // Quick export current report
+  const handleExportMarkdown = () => {
+    if (!results) return;
+    const md = buildMarkdownReport(results);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`prismtone-report-${dateStr}.md`, md);
+    notify('Downloaded Markdown report!', 'success');
+  };
+
+  // Stage Spotlight 1-click Demo Runner
+  const runOfficialDemo = () => {
+    setDraft(DEMO_DRAFT);
+    setSelectedPersonaIds(['executive', 'peer', 'legal', 'gen_z']);
+    setActiveTab('generator');
+    handleTransform(DEMO_DRAFT);
+  };
+
+  const availablePersonaList = useMemo(() => {
+    return [
+      ...BUILT_IN_PERSONAS,
+      ...customPersonas.map((c, i) => ({
+        id: c.id,
+        name: c.name,
+        color: personaColor(registry, c.id)
+      }))
+    ];
+  }, [customPersonas, registry]);
 
   return (
-    <div style={{ maxWidth: '1440px', margin: '0 auto', padding: '24px 20px' }}>
-
-      {/* 1. Header Navigation */}
-      <header style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingBottom: '20px',
-        marginBottom: '28px',
-        borderBottom: '1px solid var(--border-subtle)',
-        gap: '16px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{
-            width: '44px',
-            height: '44px',
-            borderRadius: '12px',
-            background: 'var(--prism-gradient)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 8px 24px rgba(99, 102, 241, 0.35)'
-          }}>
+    <div className="app">
+      {/* Top Header Bar */}
+      <header className="header row-between">
+        <div className="brand">
+          <div className="brand-logo">
             <Sparkles size={24} color="#ffffff" />
           </div>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              <h1 style={{ fontSize: '24px', fontWeight: '800', letterSpacing: '-0.5px' }}>PrismTone</h1>
-              <span style={{
-                fontSize: '11px',
-                fontWeight: '700',
-                textTransform: 'uppercase',
-                background: 'rgba(99, 102, 241, 0.2)',
-                color: '#818cf8',
-                padding: '2px 8px',
-                borderRadius: '999px',
-                border: '1px solid rgba(99, 102, 241, 0.3)'
-              }}>Vibeathon 2026</span>
-              {results && (
-                <span style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  fontSize: '11px',
-                  fontWeight: '700',
-                  padding: '2px 10px',
-                  borderRadius: '999px',
-                  background: activeModelDisplay ? 'rgba(16, 185, 129, 0.16)' : 'rgba(245, 158, 11, 0.16)',
-                  color: activeModelDisplay ? '#6ee7b7' : '#fbbf24',
-                  border: `1px solid ${activeModelDisplay ? 'rgba(16, 185, 129, 0.4)' : 'rgba(245, 158, 11, 0.4)'}`
-                }}>
-                  <Cpu size={12} />
-                  {activeModelDisplay
-                    ? `Live AI: ${activeModelDisplay} • ${(results.processing_time_ms / 1000).toFixed(2)}s`
-                    : 'Stage-Safe Offline Mode'}
-                </span>
-              )}
-            </div>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-              Write once. Sound right to everyone. Instant Persona &amp; Proof Transformer.
+            <h1>PrismTone</h1>
+            <p className="tiny muted" style={{ letterSpacing: '0.2px' }}>
+              Multi-Persona Communication Transformer &amp; Proof Engine • Vibeathon 2026
             </p>
           </div>
         </div>
 
-        {/* Mode Switcher Tabs */}
-        <div style={{ display: 'flex', gap: '8px', background: 'var(--bg-surface)', padding: '4px', borderRadius: '10px', border: '1px solid var(--border-subtle)' }}>
+        <div className="row" style={{ gap: 10 }}>
+          {/* Spotlight Stage Button */}
           <button
-            onClick={() => setActiveTab('generator')}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px 16px',
-              borderRadius: '8px',
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: '600',
-              fontSize: '13px',
-              background: activeTab === 'generator' ? 'var(--prism-gradient)' : 'transparent',
-              color: '#ffffff'
-            }}
+            type="button"
+            className="btn btn-solid"
+            onClick={runOfficialDemo}
+            title="Load Problem 1 Vibeathon Official Test Scenario"
+            style={{ border: '1px solid #6366f1' }}
           >
-            <Zap size={16} /> Persona Transformer
+            <Sparkles size={13} color="#a5b4fc" /> ⚡ Vibeathon Demo
           </button>
+
+          {/* Custom Persona Builder */}
           <button
-            onClick={() => {
-              setActiveTab('decoder');
-              if (!decoderResult) handleDecode();
-            }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px 16px',
-              borderRadius: '8px',
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: '600',
-              fontSize: '13px',
-              background: activeTab === 'decoder' ? 'var(--prism-gradient)' : 'transparent',
-              color: '#ffffff'
-            }}
+            type="button"
+            className="btn"
+            onClick={() => setCustomModalOpen(true)}
+            title="Create a tailored persona (Professor, HR, Investor, etc.)"
           >
-            <Compass size={16} /> Tone Decoder (Reverse Mode)
+            <Plus size={13} /> Custom Persona
           </button>
+
+          {/* Export Quick Actions */}
+          {results && (
+            <>
+              <button
+                type="button"
+                className="btn no-print"
+                onClick={handleExportMarkdown}
+                title="Download full audit report as Markdown"
+              >
+                <Download size={13} /> Export MD
+              </button>
+              <button
+                type="button"
+                className="btn no-print"
+                onClick={printReport}
+                title="Print or Save as PDF"
+              >
+                <Printer size={13} /> PDF
+              </button>
+            </>
+          )}
+
+          {/* Model Status Pill */}
+          <div className="badge badge-accent" title="Gemini 3.6 Flash with single-shot contrastive batching">
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
+            {results?.model_used ? results.model_used.replace('models/', '') : 'Gemini 3.6 Flash'}
+          </div>
         </div>
       </header>
 
-      {/* 2. TAB 1: PERSONA TRANSFORMER */}
+      {/* Navigation Tabs */}
+      <nav className="tabs no-print" style={{ marginBottom: 20 }}>
+        <button
+          type="button"
+          className="tab"
+          aria-selected={activeTab === 'generator'}
+          onClick={() => setActiveTab('generator')}
+        >
+          <Sparkles size={14} /> Persona Transformer
+        </button>
+
+        <button
+          type="button"
+          className="tab"
+          aria-selected={activeTab === 'insights'}
+          onClick={() => setActiveTab('insights')}
+        >
+          <Radar size={14} /> Visual Radar &amp; Tone Shift
+        </button>
+
+        <button
+          type="button"
+          className="tab"
+          aria-selected={activeTab === 'compare'}
+          onClick={() => setActiveTab('compare')}
+        >
+          <GitCompareArrows size={14} /> Dual Compare Mode
+        </button>
+
+        <button
+          type="button"
+          className="tab"
+          aria-selected={activeTab === 'decoder'}
+          onClick={() => setActiveTab('decoder')}
+        >
+          <Search size={14} /> Tone Decoder (Reverse Mode)
+        </button>
+
+        <button
+          type="button"
+          className="tab"
+          aria-selected={activeTab === 'history'}
+          onClick={() => setActiveTab('history')}
+        >
+          <History size={14} /> History ({history.items.length})
+        </button>
+      </nav>
+
+      {/* ============================================================== */}
+      {/* TAB 1: PERSONA TRANSFORMER (CORE WORKSPACE)                   */}
+      {/* ============================================================== */}
       {activeTab === 'generator' && (
-        <>
-          {/* Preset Chips */}
-          <div style={{ marginBottom: '16px' }}>
-            <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-subtle)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              One-Click Pitch Presets:
-            </span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' }}>
-              {PRESETS.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setDraft(p.draft);
-                    handleTransform(p.draft);
-                  }}
-                  style={{
-                    background: draft === p.draft ? 'rgba(99, 102, 241, 0.25)' : 'var(--bg-surface)',
-                    border: draft === p.draft ? '1px solid #6366f1' : '1px solid var(--border-subtle)',
-                    color: draft === p.draft ? '#a5b4fc' : 'var(--text-muted)',
-                    padding: '6px 14px',
-                    borderRadius: '999px',
-                    fontSize: '12px',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    transition: 'all 0.2s'
-                  }}
+        <div className="stack">
+          {/* Input Panel */}
+          <section className="panel stack" style={{ gap: 16 }}>
+            {/* Persona Selection Chips */}
+            <div>
+              <div className="row-between" style={{ marginBottom: 8 }}>
+                <span className="field-label" style={{ marginBottom: 0 }}>Active Personas ({selectedPersonaIds.length})</span>
+                <span className="tiny subtle">Click to toggle which voices to generate</span>
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                {availablePersonaList.map((p) => {
+                  const active = selectedPersonaIds.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className="chip"
+                      aria-pressed={active}
+                      onClick={() => togglePersonaSelection(p.id)}
+                      style={{
+                        borderColor: active ? p.color : undefined,
+                        color: active ? '#ffffff' : undefined,
+                        background: active ? `${p.color}26` : undefined
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          background: p.color,
+                          display: 'inline-block',
+                          marginRight: 6
+                        }}
+                      />
+                      {p.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Draft Textarea with Dictation & Counter */}
+            <div style={{ position: 'relative' }}>
+              <div className="row-between" style={{ marginBottom: 6 }}>
+                <label htmlFor="draft-input" className="field-label" style={{ marginBottom: 0 }}>
+                  Raw Thought / Draft Communication
+                </label>
+                <div className="row" style={{ gap: 8 }}>
+                  <span className={`tiny ${draft.length > MAX_DRAFT_CHARS ? 'fact-missing' : 'subtle'}`}>
+                    {draft.length} / {MAX_DRAFT_CHARS} chars
+                  </span>
+                </div>
+              </div>
+
+              <textarea
+                id="draft-input"
+                className={`textarea ${draft.length > MAX_DRAFT_CHARS ? 'over-limit' : ''}`}
+                rows={4}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Type or dictate your unvarnished message here (e.g. 'Server went down, it's Raj's fault, fix by Friday.')..."
+              />
+
+              {/* Dictation Interim Floating Banner */}
+              {speechInput.listening && (
+                <div
+                  className="inset banner banner-green"
+                  style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}
                 >
-                  {p.title}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Draft Input Box */}
-          <div style={{
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '16px',
-            padding: '20px',
-            marginBottom: '24px',
-            boxShadow: '0 10px 30px rgba(0,0,0,0.3)'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-              <label style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <FileText size={16} color="#818cf8" /> Raw Draft / Bullet Points
-              </label>
-              <span style={{ fontSize: '12px', color: 'var(--text-subtle)', fontFamily: 'var(--font-mono)' }}>
-                {draft.length} chars | {draft.split(/\s+/).filter(Boolean).length} words
-              </span>
+                  <span className="mic-live" style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444' }} />
+                  <span className="tiny" style={{ flex: 1 }}>
+                    <strong>Listening...</strong> {speechInput.interim || 'Speak now into your microphone...'}
+                  </span>
+                  <button type="button" className="btn btn-icon" onClick={speechInput.stop} title="Stop voice recording">
+                    <Square size={12} />
+                  </button>
+                </div>
+              )}
             </div>
 
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') handleTransform();
-              }}
-              placeholder="Enter your rough draft, bullet points, or rushed thoughts... (Ctrl+Enter to transform)"
-              rows={3}
-              style={{
-                width: '100%',
-                background: 'var(--bg-primary)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: '10px',
-                padding: '14px 16px',
-                color: 'var(--text-main)',
-                fontSize: '15px',
-                lineHeight: '1.6',
-                fontFamily: 'var(--font-sans)',
-                resize: 'vertical',
-                outline: 'none',
-                transition: 'border 0.2s'
-              }}
-              onFocus={(e) => { e.target.style.borderColor = '#6366f1'; }}
-              onBlur={(e) => { e.target.style.borderColor = 'var(--border-subtle)'; }}
-            />
+            {/* Presets Quick Pick Carousel */}
+            <div>
+              <span className="field-label">Try Quick Scenario Presets</span>
+              <div className="row" style={{ gap: 8 }}>
+                {PRESETS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      setDraft(item.draft);
+                      handleTransform(item.draft);
+                    }}
+                  >
+                    {item.title}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-            {/* Controls Bar */}
-            <div style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '12px',
-              marginTop: '16px',
-              paddingTop: '16px',
-              borderTop: '1px solid var(--border-subtle)'
-            }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
-                {/* Channel Selector */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                  {CHANNELS.map(ch => (
-                    <button
-                      key={ch.id}
-                      onClick={() => setChannel(ch.id)}
-                      title={`Target format: ${ch.label}`}
-                      style={{
-                        padding: '4px 8px',
-                        borderRadius: '6px',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontSize: '12px',
-                        fontWeight: '600',
-                        background: channel === ch.id ? '#312e81' : 'transparent',
-                        color: channel === ch.id ? '#c7d2fe' : 'var(--text-muted)'
-                      }}
-                    >
-                      {ch.icon} {ch.label}
-                    </button>
-                  ))}
+            {/* Delivery Channel, Length, Language & Sliders Controls */}
+            <div className="row-between" style={{ gap: 12, borderTop: '1px solid var(--border-subtle)', paddingTop: 14 }}>
+              <div className="row" style={{ gap: 10 }}>
+                {/* Channel */}
+                <div>
+                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Channel</span>
+                  <select className="input" value={channel} onChange={(e) => setChannel(e.target.value)} style={{ padding: '6px 10px' }}>
+                    {CHANNELS.map((c) => (
+                      <option key={c.id} value={c.id}>{c.icon} {c.label}</option>
+                    ))}
+                  </select>
                 </div>
 
-                {/* Length Control */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                  {LENGTHS.map(len => (
-                    <button
-                      key={len.id}
-                      onClick={() => setLength(len.id)}
-                      style={{
-                        padding: '4px 8px',
-                        borderRadius: '6px',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontSize: '12px',
-                        fontWeight: '600',
-                        background: length === len.id ? '#1e293b' : 'transparent',
-                        color: length === len.id ? '#ffffff' : 'var(--text-subtle)'
-                      }}
-                    >
-                      {len.label}
-                    </button>
-                  ))}
+                {/* Length */}
+                <div>
+                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Length</span>
+                  <select className="input" value={length} onChange={(e) => setLength(e.target.value)} style={{ padding: '6px 10px' }}>
+                    {LENGTHS.map((l) => (
+                      <option key={l.id} value={l.id}>{l.label}</option>
+                    ))}
+                  </select>
                 </div>
 
-                {/* Language Selector */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                  {LANGUAGES.map(lang => (
-                    <button
-                      key={lang.id}
-                      onClick={() => setLanguage(lang.id)}
-                      style={{
-                        padding: '4px 8px',
-                        borderRadius: '6px',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontSize: '12px',
-                        fontWeight: '600',
-                        background: language === lang.id ? '#1e293b' : 'transparent',
-                        color: language === lang.id ? '#ffffff' : 'var(--text-subtle)'
-                      }}
-                    >
-                      {lang.flag} {lang.label}
-                    </button>
-                  ))}
+                {/* Language */}
+                <div>
+                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Language</span>
+                  <select className="input" value={language} onChange={(e) => setLanguage(e.target.value)} style={{ padding: '6px 10px' }}>
+                    {LANGUAGES.map((l) => (
+                      <option key={l.id} value={l.id}>{l.label}</option>
+                    ))}
+                  </select>
                 </div>
 
-                {/* Privacy Shield Toggle */}
+                {/* Privacy Mode Toggle */}
                 <button
+                  type="button"
+                  className={`btn ${privacyMode ? 'btn-green-on' : ''}`}
                   onClick={() => setPrivacyMode(!privacyMode)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 12px',
-                    borderRadius: '8px',
-                    border: privacyMode ? '1px solid #10b981' : '1px solid var(--border-subtle)',
-                    background: privacyMode ? 'rgba(16, 185, 129, 0.15)' : 'var(--bg-primary)',
-                    color: privacyMode ? '#6ee7b7' : 'var(--text-muted)',
-                    fontSize: '12px',
-                    fontWeight: '600',
-                    cursor: 'pointer'
-                  }}
+                  title="Client-side redaction of emails, phones, and SSNs before sending to Gemini"
+                  style={{ alignSelf: 'flex-end', height: 35 }}
                 >
-                  <Lock size={14} />
-                  Privacy {privacyMode ? 'ON' : 'OFF'}
+                  <Lock size={12} /> Privacy Guard: {privacyMode ? 'ON' : 'OFF'}
                 </button>
 
-                {/* Sliders Drawer Toggle */}
+                {/* Sliders Accordion Toggle */}
                 <button
+                  type="button"
+                  className={`btn ${slidersOpen ? 'btn-on' : ''}`}
                   onClick={() => setSlidersOpen(!slidersOpen)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-subtle)',
-                    background: slidersOpen ? 'var(--bg-card)' : 'var(--bg-primary)',
-                    color: 'var(--text-main)',
-                    fontSize: '12px',
-                    fontWeight: '600',
-                    cursor: 'pointer'
-                  }}
+                  title="Fine-tune formality, warmth, brevity, and directness"
+                  style={{ alignSelf: 'flex-end', height: 35 }}
                 >
-                  <Sliders size={14} /> Sliders
+                  <Sliders size={12} /> Tone Sliders {slidersOpen ? '▲' : '▼'}
                 </button>
               </div>
 
-              {/* Submit Transform Button */}
-              <button
-                onClick={() => handleTransform()}
-                disabled={loading}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 24px',
-                  borderRadius: '10px',
-                  border: 'none',
-                  background: 'var(--prism-gradient)',
-                  color: '#ffffff',
-                  fontSize: '14px',
-                  fontWeight: '700',
-                  cursor: loading ? 'not-allowed' : 'pointer',
-                  opacity: loading ? 0.7 : 1,
-                  boxShadow: '0 4px 18px rgba(99, 102, 241, 0.4)',
-                  transition: 'transform 0.1s'
-                }}
-              >
-                {loading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                {loading ? 'Refracting via Gemini...' : 'Transform Across Personas'}
-              </button>
+              {/* Action Buttons: Mic + Transform */}
+              <div className="row" style={{ gap: 10 }}>
+                {speechInput.supported && (
+                  <button
+                    type="button"
+                    className={`btn ${speechInput.listening ? 'btn-danger-on mic-live' : ''}`}
+                    onClick={speechInput.listening ? speechInput.stop : speechInput.start}
+                    title="Dictate with voice input (Web Speech API)"
+                    style={{ height: 42, padding: '0 14px' }}
+                  >
+                    <Mic size={16} />
+                    {speechInput.listening ? 'Recording...' : 'Dictate'}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => handleTransform()}
+                  disabled={loading}
+                  style={{ height: 42, padding: '0 24px' }}
+                >
+                  <Sparkles size={16} className={loading ? 'animate-spin' : ''} />
+                  {loading ? 'PrismTone is Processing...' : 'Transform Personas (Ctrl+Enter)'}
+                </button>
+              </div>
             </div>
 
-            {/* Custom Sliders Panel */}
+            {/* Sliders Expansion Drawer */}
             {slidersOpen && (
-              <div style={{
-                marginTop: '16px',
-                padding: '16px',
-                background: 'var(--bg-card)',
-                borderRadius: '10px',
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                gap: '16px',
-                border: '1px solid var(--border-subtle)'
-              }}>
-                {[
-                  { key: 'formality', label: 'Formality', min: 'Casual', max: 'Strict' },
-                  { key: 'warmth', label: 'Warmth', min: 'Reserved', max: 'Empathetic' },
-                  { key: 'brevity', label: 'Brevity', min: 'Elaborate', max: 'Ultra Crisp' },
-                  { key: 'directness', label: 'Directness', min: 'Gentle', max: 'Direct' },
-                  { key: 'humor', label: 'Humor', min: 'Serious', max: 'Playful' }
-                ].map(s => (
-                  <div key={s.key}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', fontWeight: '700', marginBottom: '4px' }}>
-                      <span>{s.label}</span>
-                      <span style={{ color: '#818cf8' }}>{sliders[s.key]}/10</span>
+              <div className="inset stack" style={{ gap: 12, padding: 14 }}>
+                <div className="row-between">
+                  <span className="tiny muted" style={{ fontWeight: 700 }}>5-Axis Tone Fine Tuning (1–10)</span>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ padding: '2px 8px', fontSize: 11 }}
+                    onClick={() => setSliders(DEFAULT_SLIDERS)}
+                  >
+                    Reset Defaults
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+                  {SLIDERS.map((s) => (
+                    <div key={s.key}>
+                      <div className="row-between tiny subtle" style={{ marginBottom: 4 }}>
+                        <span>{s.label}</span>
+                        <strong className="mono" style={{ color: '#818cf8' }}>{sliders[s.key]}</strong>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={10}
+                        value={sliders[s.key]}
+                        onChange={(e) => setSliders({ ...sliders, [s.key]: Number(e.target.value) })}
+                      />
+                      <div className="row-between tiny subtle" style={{ fontSize: 9 }}>
+                        <span>{s.min}</span>
+                        <span>{s.max}</span>
+                      </div>
                     </div>
-                    <input
-                      type="range"
-                      min="1"
-                      max="10"
-                      value={sliders[s.key]}
-                      onChange={(e) => setSliders({ ...sliders, [s.key]: parseInt(e.target.value, 10) })}
-                      style={{ width: '100%', accentColor: '#6366f1' }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-subtle)' }}>
-                      <span>{s.min}</span>
-                      <span>{s.max}</span>
-                    </div>
-                  </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Cards Grid */}
+          <main>
+            {loading && !results && (
+              <div className="grid-cards">
+                <PersonaCardSkeleton />
+                <PersonaCardSkeleton />
+                <PersonaCardSkeleton />
+                <PersonaCardSkeleton />
+              </div>
+            )}
+
+            {results && results.results && (
+              <div className="grid-cards">
+                {Object.values(results.results).map((item) => (
+                  <PersonaCard
+                    key={item.persona_id}
+                    item={item}
+                    color={personaColor(registry, item.persona_id)}
+                    viewMode={viewModes[item.persona_id] || 'clean'}
+                    factsOpen={expandedFacts[item.persona_id] || false}
+                    busy={regeneratingId === item.persona_id}
+                    copied={copiedId === item.persona_id}
+                    speaking={speaker.speakingId === item.persona_id}
+                    canSpeak={speaker.supported}
+                    onViewMode={(mode) => setViewModes((prev) => ({ ...prev, [item.persona_id]: mode }))}
+                    onToggleFacts={() => setExpandedFacts((prev) => ({ ...prev, [item.persona_id]: !prev[item.persona_id] }))}
+                    onCopy={() => handleCopyCard(item.persona_id, item.rewrite)}
+                    onSpeak={() => speaker.toggle(item.persona_id, item.rewrite)}
+                    onRegenerate={() => handleRegenerateSingle(item.persona_id)}
+                  />
                 ))}
               </div>
             )}
-          </div>
-
-          {/* Privacy Notification Banner */}
-          {results?.privacy_masked && (
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              padding: '10px 16px',
-              background: 'rgba(16, 185, 129, 0.1)',
-              border: '1px solid rgba(16, 185, 129, 0.3)',
-              borderRadius: '8px',
-              marginBottom: '20px',
-              fontSize: '13px',
-              color: '#6ee7b7'
-            }}>
-              <ShieldCheck size={18} />
-              <span>
-                <strong>Privacy Guard Protected ({results.masked_entities_count} PII masked):</strong> Sensitive names/emails/phones were masked before reaching Gemini AI and restored faithfully in final cards.
-              </span>
-            </div>
-          )}
-
-          {/* 3. PARALLEL PERSONA CARDS (4 Columns) */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))',
-            gap: '20px'
-          }}>
-            {results && Object.values(results.results).map((item) => {
-              const isDiff = viewModes[item.persona_id] === 'diff';
-              const isFactOpen = !!expandedFacts[item.persona_id];
-              const isRegen = regeneratingId === item.persona_id;
-              const pColor = item.persona_id === 'executive' ? 'var(--color-executive)' :
-                             item.persona_id === 'peer' ? 'var(--color-peer)' :
-                             item.persona_id === 'legal' ? 'var(--color-legal)' : 'var(--color-genz)';
-
-              return (
-                <div
-                  key={item.persona_id}
-                  style={{
-                    background: 'var(--bg-surface)',
-                    border: '1px solid var(--border-subtle)',
-                    borderTop: `4px solid ${pColor}`,
-                    borderRadius: '14px',
-                    padding: '18px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between',
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
-                    opacity: isRegen ? 0.65 : 1,
-                    transition: 'opacity 0.2s'
-                  }}
-                >
-                  <div>
-                    {/* Persona Card Header */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px', gap: '8px' }}>
-                      <div>
-                        <h2 style={{ fontSize: '17px', fontWeight: '800', color: '#ffffff' }}>{item.persona_name}</h2>
-                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.4', marginTop: '2px' }}>
-                          {item.tagline}
-                        </p>
-                      </div>
-
-                      {/* Fact Guard Badge (Click to expand checklist) */}
-                      <button
-                        onClick={() => setExpandedFacts({ ...expandedFacts, [item.persona_id]: !isFactOpen })}
-                        title="Click to inspect Fact Guard checklist"
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          fontSize: '11px',
-                          fontWeight: '700',
-                          padding: '3px 8px',
-                          borderRadius: '999px',
-                          cursor: 'pointer',
-                          whiteSpace: 'nowrap',
-                          background: item.fact_guard_status === 'green' ? 'rgba(16, 185, 129, 0.2)' :
-                                      item.fact_guard_status === 'amber' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                          color: item.fact_guard_status === 'green' ? '#34d399' :
-                                 item.fact_guard_status === 'amber' ? '#fbbf24' : '#f87171',
-                          border: `1px solid ${item.fact_guard_status === 'green' ? '#10b981' :
-                                               item.fact_guard_status === 'amber' ? '#f59e0b' : '#ef4444'}`
-                        }}
-                      >
-                        <ShieldCheck size={12} />
-                        {item.fact_guard_status === 'green' ? 'Facts Preserved' :
-                         item.fact_guard_status === 'amber' ? 'Fact Paraphrased' : 'Fact Alert'}
-                      </button>
-                    </div>
-
-                    {/* Expandable Fact Guard Checklist */}
-                    {isFactOpen && item.facts_found && item.facts_found.length > 0 && (
-                      <div style={{
-                        background: 'var(--bg-primary)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: '8px',
-                        padding: '8px 10px',
-                        marginBottom: '10px',
-                        fontSize: '11px'
-                      }}>
-                        <div style={{ fontWeight: '700', color: 'var(--text-muted)', marginBottom: '4px' }}>Fact Guard Audit:</div>
-                        {item.facts_found.map((f, idx) => (
-                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
-                            <span><code>{f.text}</code> <span style={{ color: 'var(--text-subtle)' }}>({f.category})</span></span>
-                            <span style={{ color: f.status === 'missing' ? '#f87171' : '#34d399', fontWeight: 700 }}>
-                              {f.status}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Subject Line (if email) */}
-                    {item.subject_line && (
-                      <div style={{
-                        background: 'rgba(255, 255, 255, 0.04)',
-                        padding: '6px 10px',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        marginBottom: '12px',
-                        borderLeft: `3px solid ${pColor}`
-                      }}>
-                        <strong style={{ color: 'var(--text-muted)' }}>Subject:</strong> {item.subject_line}
-                      </div>
-                    )}
-
-                    {/* View Switcher: Clean vs Diff */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
-                      <div style={{ display: 'flex', background: 'var(--bg-primary)', borderRadius: '6px', padding: '2px', border: '1px solid var(--border-subtle)' }}>
-                        <button
-                          onClick={() => setViewModes({ ...viewModes, [item.persona_id]: 'clean' })}
-                          style={{
-                            padding: '3px 8px',
-                            border: 'none',
-                            borderRadius: '4px',
-                            fontSize: '11px',
-                            fontWeight: '600',
-                            cursor: 'pointer',
-                            background: !isDiff ? '#334155' : 'transparent',
-                            color: !isDiff ? '#ffffff' : 'var(--text-subtle)'
-                          }}
-                        >
-                          <Eye size={12} style={{ display: 'inline', marginRight: '3px' }} /> Clean
-                        </button>
-                        <button
-                          onClick={() => setViewModes({ ...viewModes, [item.persona_id]: 'diff' })}
-                          style={{
-                            padding: '3px 8px',
-                            border: 'none',
-                            borderRadius: '4px',
-                            fontSize: '11px',
-                            fontWeight: '600',
-                            cursor: 'pointer',
-                            background: isDiff ? '#334155' : 'transparent',
-                            color: isDiff ? '#ffffff' : 'var(--text-subtle)'
-                          }}
-                        >
-                          <RefreshCw size={12} style={{ display: 'inline', marginRight: '3px' }} /> Word Diff
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Output Text or Diff Representation */}
-                    <div style={{
-                      background: 'var(--bg-primary)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: '8px',
-                      padding: '14px',
-                      minHeight: '110px',
-                      fontSize: '14px',
-                      lineHeight: '1.6',
-                      color: 'var(--text-main)',
-                      marginBottom: '14px'
-                    }}>
-                      {!isDiff ? (
-                        item.rewrite
-                      ) : (
-                        <div>
-                          {item.diff_tokens.map((chunk, idx) => {
-                            if (chunk.type === 'deleted') {
-                              return <span key={idx} className="diff-deleted">{chunk.text}</span>;
-                            } else if (chunk.type === 'added') {
-                              return <span key={idx} className="diff-added">{chunk.text}</span>;
-                            }
-                            return <span key={idx} className="diff-unchanged">{chunk.text}</span>;
-                          })}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* "Why This Changed" Annotations */}
-                    {item.change_notes && item.change_notes.length > 0 && (
-                      <div style={{ marginBottom: '14px', fontSize: '12px' }}>
-                        <span style={{ fontWeight: '700', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                          Why this changed:
-                        </span>
-                        <ul style={{ paddingLeft: '18px', color: 'var(--text-muted)' }}>
-                          {item.change_notes.map((note, idx) => (
-                            <li key={idx} style={{ marginBottom: '2px' }}>{note}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {/* Risk Flags */}
-                    {item.risk_flags && item.risk_flags.length > 0 && (
-                      <div style={{
-                        padding: '6px 10px',
-                        background: 'rgba(239, 68, 68, 0.1)',
-                        border: '1px solid rgba(239, 68, 68, 0.25)',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        color: '#fca5a5',
-                        marginBottom: '14px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px'
-                      }}>
-                        <AlertTriangle size={14} />
-                        <span><strong>Risk Note:</strong> {item.risk_flags.join(', ')}</span>
-                      </div>
-                    )}
-
-                    {/* Metrics Bar & Change Score */}
-                    <div style={{
-                      background: 'rgba(255, 255, 255, 0.02)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: '8px',
-                      padding: '10px 12px',
-                      marginBottom: '14px',
-                      fontSize: '11px'
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                        <span>Change Score:</span>
-                        <strong style={{ color: '#818cf8', fontFamily: 'var(--font-mono)' }}>
-                          {item.metrics.change_score} / 100
-                        </strong>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', textAlign: 'center', marginTop: '6px' }}>
-                        <div style={{ background: 'var(--bg-primary)', padding: '4px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-subtle)', display: 'block' }}>Formality</span>
-                          <strong>{item.metrics.formality}/10</strong>
-                        </div>
-                        <div style={{ background: 'var(--bg-primary)', padding: '4px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-subtle)', display: 'block' }}>Warmth</span>
-                          <strong>{item.metrics.warmth}/10</strong>
-                        </div>
-                        <div style={{ background: 'var(--bg-primary)', padding: '4px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-subtle)', display: 'block' }}>Directness</span>
-                          <strong>{item.metrics.directness}/10</strong>
-                        </div>
-                      </div>
-                      <div style={{ marginTop: '8px', color: 'var(--text-subtle)', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>{item.metrics.word_count} words ({item.metrics.length_change_pct >= 0 ? '+' : ''}{item.metrics.length_change_pct}%)</span>
-                        <span>{item.metrics.reading_level_label}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card Action Buttons */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingTop: '12px',
-                    borderTop: '1px solid var(--border-subtle)',
-                    gap: '6px'
-                  }}>
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <button
-                        onClick={() => speakText(item.rewrite, item.persona_id)}
-                        title="Read aloud polished draft"
-                        style={{
-                          padding: '6px 10px',
-                          background: speakingId === item.persona_id ? '#4f46e5' : 'var(--bg-primary)',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: '6px',
-                          color: 'var(--text-muted)',
-                          fontSize: '12px',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        <Volume2 size={14} /> Listen
-                      </button>
-
-                      <button
-                        onClick={() => handleRegenerateSingle(item.persona_id)}
-                        disabled={isRegen}
-                        title="Regenerate this persona card with Gemini"
-                        style={{
-                          padding: '6px 10px',
-                          background: 'var(--bg-primary)',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: '6px',
-                          color: 'var(--text-muted)',
-                          fontSize: '12px',
-                          cursor: isRegen ? 'not-allowed' : 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        <RotateCcw size={13} className={isRegen ? 'animate-spin' : ''} /> Retry
-                      </button>
-                    </div>
-
-                    <button
-                      onClick={() => copyToClipboard(item.rewrite, item.persona_id)}
-                      style={{
-                        padding: '6px 14px',
-                        background: copiedId === item.persona_id ? '#10b981' : '#312e81',
-                        border: 'none',
-                        borderRadius: '6px',
-                        color: '#ffffff',
-                        fontSize: '12px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px'
-                      }}
-                    >
-                      {copiedId === item.persona_id ? <Check size={14} /> : <Copy size={14} />}
-                      {copiedId === item.persona_id ? 'Copied!' : 'Copy Polish'}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
+          </main>
+        </div>
       )}
 
-      {/* 3. TAB 2: TONE DECODER (REVERSE MODE) */}
-      {activeTab === 'decoder' && (
-        <div style={{ maxWidth: '900px', margin: '0 auto' }}>
-          <div style={{
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '16px',
-            padding: '24px',
-            marginBottom: '24px'
-          }}>
-            <h2 style={{ fontSize: '18px', fontWeight: '800', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Compass size={20} color="#818cf8" /> Tone Decoder (Reverse Mode)
-            </h2>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Paste an incoming email or message that feels passive-aggressive, high-pressure, or ambiguous. Gemini 3.6 Flash will decode the subtext and generate 3 tactical reply angles.
-            </p>
-
-            <textarea
-              value={decoderInput}
-              onChange={(e) => setDecoderInput(e.target.value)}
-              placeholder="Paste incoming message here..."
-              rows={3}
-              style={{
-                width: '100%',
-                background: 'var(--bg-primary)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: '10px',
-                padding: '14px',
-                color: 'var(--text-main)',
-                fontSize: '15px',
-                outline: 'none',
-                marginBottom: '16px'
-              }}
+      {/* ============================================================== */}
+      {/* TAB 2: VISUAL RADAR & TONE SHIFT (STEP 1)                      */}
+      {/* ============================================================== */}
+      {activeTab === 'insights' && (
+        <div>
+          {results ? (
+            <InsightsPanel
+              result={results}
+              registry={registry}
+              target={slidersOpen ? slidersToTarget(sliders) : null}
             />
+          ) : (
+            <div className="panel empty-state">
+              Run a transformation first to visualize the Tone Radar and Shift Spectrum.
+            </div>
+          )}
+        </div>
+      )}
 
-            <button
-              onClick={handleDecode}
-              disabled={decoderLoading}
-              style={{
-                padding: '10px 24px',
-                borderRadius: '8px',
-                border: 'none',
-                background: 'var(--prism-gradient)',
-                color: '#ffffff',
-                fontWeight: '700',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}
-            >
-              {decoderLoading ? <RefreshCw size={16} className="animate-spin" /> : <Search size={16} />}
-              {decoderLoading ? 'Decoding via Gemini...' : 'Decode Subtext & Recommended Replies'}
-            </button>
-          </div>
+      {/* ============================================================== */}
+      {/* TAB 3: DUAL COMPARE MODE (STEP 2)                              */}
+      {/* ============================================================== */}
+      {activeTab === 'compare' && (
+        <div>
+          {results ? (
+            <CompareView
+              result={results}
+              registry={registry}
+              onToast={notify}
+            />
+          ) : (
+            <div className="panel empty-state">
+              Run a transformation first to compare personas side-by-side.
+            </div>
+          )}
+        </div>
+      )}
 
-          {decoderResult && (
-            <div style={{
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: '16px',
-              padding: '24px'
-            }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '20px' }}>
-                <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-subtle)', display: 'block' }}>Detected Tone</span>
-                  <strong style={{ fontSize: '15px', color: '#f59e0b' }}>{decoderResult.dominant_tone}</strong>
-                </div>
-                <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-subtle)', display: 'block' }}>Urgency Level</span>
-                  <strong style={{ fontSize: '15px', color: decoderResult.urgency_level === 'Critical' ? '#ef4444' : '#10b981' }}>
-                    {decoderResult.urgency_level}
-                  </strong>
-                </div>
-                <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-subtle)', display: 'block' }}>Sentiment</span>
-                  <strong style={{ fontSize: '15px', color: '#c084fc' }}>{decoderResult.sentiment}</strong>
-                </div>
+      {/* ============================================================== */}
+      {/* TAB 4: TONE DECODER (REVERSE MODE)                             */}
+      {/* ============================================================== */}
+      {activeTab === 'decoder' && (
+        <div className="stack">
+          <section className="panel stack" style={{ gap: 16 }}>
+            <div className="row-between">
+              <div>
+                <h3 className="panel-title">
+                  <Search size={18} color="#818cf8" /> Tone Decoder &amp; Subtext Analyzer (Reverse Mode)
+                </h3>
+                <p className="tiny subtle" style={{ marginTop: 2 }}>
+                  Paste any ambiguous email or chat message to reveal hidden subtext, risks, and tactical response strategies.
+                </p>
               </div>
 
-              {/* Subtext Translation Card */}
-              <div style={{
-                background: 'rgba(99, 102, 241, 0.1)',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                padding: '16px',
-                borderRadius: '10px',
-                marginBottom: '20px'
-              }}>
-                <h3 style={{ fontSize: '14px', fontWeight: '800', color: '#818cf8', marginBottom: '6px' }}>
-                  💡 Hidden Subtext Translation ("What they really mean"):
+              {/* Decoder Presets */}
+              <div className="row" style={{ gap: 6 }}>
+                {DECODER_PRESETS.map((preset, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 11 }}
+                    onClick={() => {
+                      setDecoderInput(preset);
+                      handleDecode(preset);
+                    }}
+                  >
+                    Sample {idx + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <textarea
+              className="textarea"
+              rows={3}
+              value={decoderInput}
+              onChange={(e) => setDecoderInput(e.target.value)}
+              placeholder="Paste ambiguous message here (e.g. 'Per my last email, please fix this ASAP or I will escalate to the VP.')..."
+            />
+
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => handleDecode()}
+                disabled={decoderLoading}
+              >
+                <Search size={15} className={decoderLoading ? 'animate-spin' : ''} />
+                {decoderLoading ? 'Analyzing Subtext...' : 'Decode Subtext & Strategies'}
+              </button>
+            </div>
+          </section>
+
+          {/* Decoder Results */}
+          {decoderResult && (
+            <div className="grid-2">
+              {/* Meaning & Emotional Analysis */}
+              <div className="panel stack" style={{ gap: 14 }}>
+                <h3 className="panel-title" style={{ fontSize: 14 }}>
+                  <ShieldCheck size={16} color="#10b981" /> Linguistic Breakdown
                 </h3>
-                <p style={{ fontSize: '14px', color: '#e2e8f0', lineHeight: '1.6' }}>
-                  {decoderResult.hidden_subtext}
-                </p>
-                {decoderResult.key_signals && decoderResult.key_signals.length > 0 && (
-                  <ul style={{ marginTop: '10px', paddingLeft: '18px', fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {decoderResult.key_signals.map((sig, idx) => (
-                      <li key={idx}>{sig}</li>
-                    ))}
-                  </ul>
+
+                <div className="inset">
+                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Surface Meaning</span>
+                  <p style={{ fontSize: 13 }}>{decoderResult.surface_meaning}</p>
+                </div>
+
+                <div className="inset" style={{ borderColor: 'rgba(99, 102, 241, 0.4)' }}>
+                  <span className="tiny" style={{ color: '#818cf8', fontWeight: 700, display: 'block', marginBottom: 2 }}>
+                    🕵️ Actual Subtext &amp; True Intent
+                  </span>
+                  <p style={{ fontSize: 13, fontWeight: 500 }}>{decoderResult.subtext}</p>
+                </div>
+
+                <div className="row-between inset">
+                  <div>
+                    <span className="tiny subtle">Emotional Temperature</span>
+                    <strong style={{ display: 'block', fontSize: 14, color: '#f59e0b' }}>
+                      {decoderResult.emotional_temperature}
+                    </strong>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span className="tiny subtle">Urgency Level</span>
+                    <strong style={{ display: 'block', fontSize: 14, color: '#ec4899' }}>
+                      {decoderResult.urgency_level}
+                    </strong>
+                  </div>
+                </div>
+
+                {decoderResult.hidden_motives && (
+                  <div className="risk" style={{ background: 'rgba(245, 158, 11, 0.1)', borderColor: 'rgba(245, 158, 11, 0.3)', color: '#fbbf24' }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                    <span><strong>Hidden Motive / Risk:</strong> {decoderResult.hidden_motives}</span>
+                  </div>
                 )}
               </div>
 
-              {/* Recommended Reply Cards */}
-              <h3 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '14px' }}>
-                Tactical Reply Angles:
-              </h3>
-              <div style={{ display: 'grid', gap: '14px' }}>
-                {decoderResult.suggested_reply_strategies.map((strat, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      background: 'var(--bg-primary)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: '10px',
-                      padding: '14px'
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                      <strong style={{ fontSize: '14px', color: '#38bdf8' }}>{strat.title}</strong>
-                      <span style={{ fontSize: '11px', color: 'var(--text-subtle)' }}>{strat.vibe}</span>
+              {/* Ready-to-Send Tactical Replies */}
+              <div className="panel stack" style={{ gap: 14 }}>
+                <h3 className="panel-title" style={{ fontSize: 14 }}>
+                  <Send size={16} color="#818cf8" /> Ready-to-Send Tactical Responses
+                </h3>
+                <p className="tiny subtle">Choose the posture that best fits your relationship with the sender:</p>
+
+                {decoderResult.recommended_responses && decoderResult.recommended_responses.map((reply, i) => (
+                  <div key={i} className="inset stack" style={{ gap: 6, position: 'relative' }}>
+                    <div className="row-between">
+                      <span className="badge badge-accent">{reply.strategy}</span>
+                      <button
+                        type="button"
+                        className={`btn ${copiedReplyIdx === i ? 'btn-success' : ''}`}
+                        style={{ padding: '2px 8px', fontSize: 11 }}
+                        onClick={() => handleCopyReply(i, reply.text)}
+                      >
+                        {copiedReplyIdx === i ? <Check size={11} /> : <Copy size={11} />}
+                        {copiedReplyIdx === i ? 'Copied' : 'Copy'}
+                      </button>
                     </div>
-                    <p style={{ fontSize: '14px', color: 'var(--text-main)', marginBottom: '10px' }}>
-                      "{strat.recommended_snippet}"
-                    </p>
-                    <button
-                      onClick={() => copyToClipboard(strat.recommended_snippet, `strat_${i}`)}
-                      style={{
-                        padding: '4px 10px',
-                        fontSize: '11px',
-                        background: copiedId === `strat_${i}` ? '#10b981' : '#1e293b',
-                        border: 'none',
-                        borderRadius: '4px',
-                        color: '#ffffff',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      {copiedId === `strat_${i}` ? <Check size={12} /> : <Copy size={12} />}
-                      {copiedId === `strat_${i}` ? 'Copied Snippet' : 'Copy Snippet'}
-                    </button>
+                    <p style={{ fontSize: 13, lineHeight: 1.5 }}>"{reply.text}"</p>
                   </div>
                 ))}
               </div>
@@ -1250,22 +821,34 @@ export default function App() {
         </div>
       )}
 
-      {/* Footer */}
-      <footer style={{
-        marginTop: '40px',
-        paddingTop: '20px',
-        borderTop: '1px solid var(--border-subtle)',
-        display: 'flex',
-        flexWrap: 'wrap',
-        justifyContent: 'space-between',
-        gap: '10px',
-        fontSize: '12px',
-        color: 'var(--text-subtle)'
-      }}>
-        <span>PrismTone Engine • Graphic Era Hill University (Vibeathon 2026)</span>
-        <span>Python FastAPI + Gemini 3.6 Flash • React Vite • Zero-Leak Privacy Guard</span>
-      </footer>
+      {/* ============================================================== */}
+      {/* TAB 5: HISTORY & SAVED (STEP 3)                                */}
+      {/* ============================================================== */}
+      {activeTab === 'history' && (
+        <HistoryPanel
+          history={history}
+          onSelectEntry={(entry) => {
+            setDraft(entry.draft);
+            if (entry.result) setResults(entry.result);
+            setActiveTab('generator');
+            notify('Loaded transformation from history!', 'info');
+          }}
+          onToast={notify}
+        />
+      )}
 
+      {/* Custom Persona Builder Modal (Step 5) */}
+      <CustomPersonaModal
+        isOpen={customModalOpen}
+        onClose={() => setCustomModalOpen(false)}
+        customPersonas={customPersonas}
+        onSave={handleAddCustomPersona}
+        onDelete={handleDeleteCustomPersona}
+        onToast={notify}
+      />
+
+      {/* Toast Stack */}
+      <ToastStack toasts={toasts} />
     </div>
   );
 }
