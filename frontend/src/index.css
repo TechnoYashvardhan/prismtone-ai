@@ -1349,11 +1349,44 @@ input[type="range"].modern-slider::-webkit-slider-thumb:hover {
 /* ============================================================== */
 /* 12. UTILITIES & PRINT                                         */
 /* ============================================================== */
+/* Utilities & Semantic Helpers */
 .muted { color: var(--text-secondary); }
 .subtle { color: var(--text-tertiary); }
 .mono { font-family: var(--font-mono); }
-.row-center { display: flex; align-items: center; gap: 8px; }
+.tiny { font-size: 12px; }
+.row, .row-center { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.stack { display: flex; flex-direction: column; gap: 20px; }
+.fact-missing { color: var(--danger); font-weight: 700; }
+.empty-state {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 14px;
+}
+
+/* Dark-Theme High-Contrast Status Overrides */
+[data-theme="dark"] .fact-guard-badge.green,
+[data-theme="dark"] .badge-green,
+[data-theme="dark"] .stage-btn.copied {
+  color: #34d399;
+}
+[data-theme="dark"] .fact-guard-badge.amber,
+[data-theme="dark"] .badge-amber {
+  color: #fbbf24;
+}
+[data-theme="dark"] .fact-guard-badge.red,
+[data-theme="dark"] .badge-red {
+  color: #f87171;
+}
+[data-theme="dark"] .diff-deleted {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+[data-theme="dark"] .diff-added {
+  background: rgba(16, 185, 129, 0.2);
+  color: #6ee7b7;
+}
 
 /* Backward Compatibility Helpers for Subcomponents */
 .panel {

@@ -23,15 +23,19 @@ export default function InsightsPanel({ result, registry, target }) {
   if (target) series.push({ id: '__target', label: 'Slider target', color: '#a5b4fc', values: target, dashed: true });
 
   return (
-    <div className="grid-2">
-      <section className="panel">
-        <h3 className="panel-title" style={{ marginBottom: 12 }}><Radar size={17} color="#818cf8" /> Tone Radar</h3>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <section>
         <RadarChart series={series} />
       </section>
 
-      <section className="panel">
-        <h3 className="panel-title" style={{ marginBottom: 4 }}><Activity size={17} color="#818cf8" /> Tone Shift Spectrum</h3>
-        <p className="tiny subtle" style={{ marginBottom: 16 }}>White bar = your original draft. Dots = where each persona moved it (1–10).</p>
+      <section style={{ borderTop: '1px solid var(--border-hairline)', paddingTop: 20 }}>
+        <h4 className="panel-title" style={{ marginBottom: 4 }}>
+          <Activity size={16} color="var(--accent-light)" />
+          <span>Tone Shift Spectrum</span>
+        </h4>
+        <p className="tiny subtle" style={{ marginBottom: 16 }}>
+          Vertical bar = your original draft • Colored dots = where each persona moved it (1–10).
+        </p>
         {SHIFT_AXES.map((axis) => (
           <div key={axis.key} className="shift-row">
             <span className="muted" style={{ fontWeight: 600 }}>{axis.label}</span>
@@ -51,10 +55,11 @@ export default function InsightsPanel({ result, registry, target }) {
             </div>
           </div>
         ))}
-        <div className="row tiny" style={{ marginTop: 4, gap: 12 }}>
+        <div className="row tiny" style={{ marginTop: 6, gap: 12 }}>
           {cards.map((c) => (
-            <span key={c.persona_id} className="row" style={{ gap: 5 }}>
-              <span className="swatch" style={{ background: personaColor(registry, c.persona_id), borderRadius: '50%' }} />{c.persona_name}
+            <span key={c.persona_id} className="row-center" style={{ gap: 6 }}>
+              <span className="swatch" style={{ background: personaColor(registry, c.persona_id), borderRadius: '50%' }} />
+              <span>{c.persona_name}</span>
             </span>
           ))}
         </div>

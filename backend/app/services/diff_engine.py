@@ -47,13 +47,16 @@ def compute_word_diff(original: str, rewrite: str) -> List[DiffChunk]:
 
     return diff_chunks
 
+WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u0900-\u097F]+")
+
 def calculate_change_score(original: str, rewrite: str, tone_shift: float = 0.0) -> float:
     """
     Computes a 0 to 100 'How much did it change?' score.
     Combines word-level edit ratio (SequenceMatcher similarity inverse) and tone delta.
+    Supports both Latin (English/Hinglish) and Devanagari (Hindi) scripts cleanly.
     """
-    orig_words = re.findall(r'\b\w+\b', original.lower())
-    rewr_words = re.findall(r'\b\w+\b', rewrite.lower())
+    orig_words = WORD_TOKEN_RE.findall(original.lower())
+    rewr_words = WORD_TOKEN_RE.findall(rewrite.lower())
 
     if not orig_words and not rewr_words:
         return 0.0

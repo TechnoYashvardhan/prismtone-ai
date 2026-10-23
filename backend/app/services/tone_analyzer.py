@@ -27,11 +27,22 @@ RISK_PATTERNS = {
     )
 }
 
+WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u0900-\u097F]+")
+DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+DEVANAGARI_BASE_SYLLABLE_RE = re.compile(r"[\u0904-\u0939\u0958-\u0961]")
+
+
 def count_syllables_word(word: str) -> int:
-    """Estimates syllable count of an English word."""
-    word = word.lower().strip(".:;?!,'\"")
+    """Estimates syllable count of an English, Hinglish, or Devanagari Hindi word."""
+    word = word.lower().strip(".:;?!,'\"।॥")
     if not word:
         return 1
+    if DEVANAGARI_RE.search(word):
+        # Count Devanagari aksharas minus conjunct viramas and silent word-final schwa
+        bases = len(DEVANAGARI_BASE_SYLLABLE_RE.findall(word))
+        viramas = word.count("\u094d")
+        silent_final_schwa = 1 if (bases > 1 and re.search(r"[\u0915-\u0939\u0958-\u095f]$", word)) else 0
+        return max(1, bases - viramas - silent_final_schwa)
     if len(word) <= 3:
         return 1
     # Count vowel groups
@@ -41,16 +52,17 @@ def count_syllables_word(word: str) -> int:
         count -= 1
     return max(1, count)
 
+
 def calculate_reading_grade(text: str) -> Tuple[float, str]:
     """
-    Computes Flesch-Kincaid Grade Level:
+    Computes Flesch-Kincaid Grade Level across English, Hinglish, and Hindi (Devanagari):
     0.39 * (total words / total sentences) + 11.8 * (total syllables / total words) - 15.59
     """
-    sentences = re.split(r'[.!?]+', text)
+    sentences = re.split(r'[.!?।॥\n]+', text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 0]
     num_sentences = max(1, len(sentences))
 
-    words = re.findall(r'\b[a-zA-Z]+\b', text)
+    words = WORD_TOKEN_RE.findall(text)
     num_words = max(1, len(words))
 
     total_syllables = sum(count_syllables_word(w) for w in words)
@@ -101,27 +113,32 @@ def detect_risk_flags(text: str) -> List[str]:
 def estimate_tone_scores(text: str, persona_hint: str = "") -> Dict[str, float]:
     """
     Estimates Formality, Warmth, and Directness from 1.0 to 10.0 based on structural cues.
+    Supports English, Hinglish, and Devanagari Hindi cues.
     """
     text_lower = text.lower()
-    words = re.findall(r'\b\w+\b', text_lower)
+    words = WORD_TOKEN_RE.findall(text_lower)
     word_count = max(1, len(words))
 
     # Formality indicators
     contractions = len(re.findall(r"\b(can't|won't|it's|i'm|don't|let's|you're|we'll)\b", text_lower))
-    slang = len(re.findall(r"\b(yo|fr|ngl|tbh|bet|fire|vibes|hyped|lowkey|highkey|fam|bruh|pls|thx)\b", text_lower))
-    formal_words = len(re.findall(r"\b(sincerely|furthermore|regarding|pursuant|consequently|hereby|kindly|herewith|commence)\b", text_lower))
+    slang = len(re.findall(r"\b(yo|fr|ngl|tbh|bet|fire|vibes|hyped|lowkey|highkey|fam|bruh|pls|thx|yaar|bhai|mast|chill|scene)\b", text_lower))
+    slang += len(re.findall(r"(यार|भाई|मस्त|चिल|बिंदास)", text))
+    formal_words = len(re.findall(r"\b(sincerely|furthermore|regarding|pursuant|consequently|hereby|kindly|herewith|commence|advised|remediation|protocol)\b", text_lower))
+    formal_words += len(re.findall(r"(सूचित|कृपया|निर्धारित|तथा|अनुसार|सादर|प्रक्रिया|समाधान)", text))
 
     base_formality = 5.0 + (formal_words * 1.5) - (contractions * 0.8) - (slang * 2.5)
 
     # Warmth indicators
-    warm_words = len(re.findall(r"\b(appreciate|thanks|thank you|glad|great work|hope you|cheers|excited|warmly|kind|support|proud)\b", text_lower))
+    warm_words = len(re.findall(r"\b(appreciate|thanks|thank you|glad|great work|hope you|cheers|excited|warmly|kind|support|proud|shukriya|dhanyavaad|milkar)\b", text_lower))
+    warm_words += len(re.findall(r"(धन्यवाद|सहयोग|शुक्रिया|मिलकर|खुशी|मदद|नमस्ते)", text))
     emojis = len(re.findall(r'[\U00010000-\U0010ffff]', text))
     exclamations = text.count('!')
     base_warmth = 4.0 + (warm_words * 1.2) + (emojis * 1.0) + (min(exclamations, 3) * 0.5)
 
     # Directness indicators
     bullets = len(re.findall(r'(?:^|\n)\s*[-*•\d+.]\s+', text))
-    action_verbs = len(re.findall(r"\b(action|deadline|by friday|fix|deliver|due|resolve|next steps|priority)\b", text_lower))
+    action_verbs = len(re.findall(r"\b(action|deadline|by friday|fix|deliver|due|resolve|next steps|priority|target|tak)\b", text_lower))
+    action_verbs += len(re.findall(r"(लक्ष्य|तुरंत|शीघ्र|शुक्रवार तक|पैच|प्राथमिकता)", text))
     word_brevity_bonus = 3.0 if word_count < 35 else (1.5 if word_count < 65 else 0.0)
     base_directness = 4.0 + (bullets * 1.2) + (action_verbs * 0.8) + word_brevity_bonus
 

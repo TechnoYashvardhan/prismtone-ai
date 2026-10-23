@@ -10,8 +10,9 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections import OrderedDict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from app.config import settings
@@ -19,12 +20,18 @@ from app.config import settings
 logger = logging.getLogger("prismtone.gemini")
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-PRIMARY_TIMEOUT_S = 14.0
-FALLBACK_TIMEOUT_S = 9.0
+PRIMARY_TIMEOUT_S = 18.0
+FALLBACK_TIMEOUT_S = 14.0
 CACHE_MAX_ENTRIES = 64
+
+RESILIENT_FALLBACK_CHAIN = [
+    "models/gemini-3-flash-preview",
+    "models/gemini-3.1-flash-lite-preview",
+]
 
 _http_client: Optional[httpx.AsyncClient] = None
 _cache: "OrderedDict[str, Tuple[Dict[str, Any], str]]" = OrderedDict()
+_cooldown_until: Dict[str, float] = {}
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -38,15 +45,15 @@ def _get_client() -> httpx.AsyncClient:
 def _build_generation_config(model_name: str, temperature: float) -> Dict[str, Any]:
     """
     Tailors generationConfig per model family (verified empirically):
-    - gemini-3.6-flash accepts thinkingBudget=0, which makes structured JSON ~2.4x faster.
-    - gemini-3.5-flash-lite rejects thinkingBudget, and is fast without it.
+    - gemini-3.6-flash & gemini-3-flash-preview accept thinkingBudget=0 (~2.4x faster JSON).
+    - flash-lite variants are fastest without thinkingConfig.
     """
     cfg: Dict[str, Any] = {
         "responseMimeType": "application/json",
         "temperature": temperature,
-        "maxOutputTokens": 2400,
+        "maxOutputTokens": 4096,
     }
-    if "3.6-flash" in model_name:
+    if ("3.6-flash" in model_name or "3-flash" in model_name) and "lite" not in model_name:
         cfg["thinkingConfig"] = {"thinkingBudget": 0}
     return cfg
 
@@ -103,9 +110,27 @@ async def generate_gemini_json(
         if cached:
             return cached
 
-    model_chain = [(settings.GEMINI_MODEL, PRIMARY_TIMEOUT_S)]
-    if settings.GEMINI_FALLBACK_MODEL and settings.GEMINI_FALLBACK_MODEL != settings.GEMINI_MODEL:
-        model_chain.append((settings.GEMINI_FALLBACK_MODEL, FALLBACK_TIMEOUT_S))
+    raw_candidates: List[Tuple[str, float]] = [(settings.GEMINI_MODEL, PRIMARY_TIMEOUT_S)]
+    for extra_model in RESILIENT_FALLBACK_CHAIN:
+        raw_candidates.append((extra_model, PRIMARY_TIMEOUT_S if "lite" not in extra_model else FALLBACK_TIMEOUT_S))
+    if settings.GEMINI_FALLBACK_MODEL:
+        raw_candidates.append((settings.GEMINI_FALLBACK_MODEL, FALLBACK_TIMEOUT_S))
+
+    # Deduplicate while preserving priority order
+    seen_models = set()
+    deduped: List[Tuple[str, float]] = []
+    for m_name, m_timeout in raw_candidates:
+        if m_name and m_name not in seen_models:
+            seen_models.add(m_name)
+            deduped.append((m_name, m_timeout))
+
+    now = time.monotonic()
+    healthy = [(m, t) for m, t in deduped if _cooldown_until.get(m, 0.0) <= now]
+    cooling = sorted(
+        [(m, t) for m, t in deduped if _cooldown_until.get(m, 0.0) > now],
+        key=lambda item: _cooldown_until.get(item[0], 0.0),
+    )
+    model_chain = healthy + cooling
 
     client = _get_client()
     # Key goes in a header (not the URL) so it never leaks into logs or tracebacks.
@@ -124,15 +149,19 @@ async def generate_gemini_json(
                 timeout=timeout_s,
             )
             if resp.status_code != 200:
-                logger.warning("Gemini %s returned HTTP %s: %s", model_name, resp.status_code, resp.text[:200])
+                cooldown_s = 180.0 if resp.status_code == 429 else 45.0
+                _cooldown_until[model_name] = time.monotonic() + cooldown_s
+                logger.warning("Gemini %s returned HTTP %s (cooling %.0fs): %s", model_name, resp.status_code, cooldown_s, resp.text[:160])
                 continue
             parsed = _extract_json_dict(resp.json())
             if parsed is not None:
+                _cooldown_until.pop(model_name, None)
                 _cache_put(cache_key, parsed, model_name)
                 return parsed, model_name
             logger.warning("Gemini %s returned an empty or non-object payload", model_name)
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError, ValueError) as exc:
-            logger.warning("Gemini %s failed: %s", model_name, type(exc).__name__)
+            _cooldown_until[model_name] = time.monotonic() + 45.0
+            logger.warning("Gemini %s failed (%s), cooling 45s", model_name, type(exc).__name__)
             continue
 
     return None, None

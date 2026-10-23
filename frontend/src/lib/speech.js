@@ -70,42 +70,101 @@ const VOICE_STYLE = {
   gen_z: { rate: 1.15, pitch: 1.25 },
 };
 
+const DEVANAGARI_RE = /[\u0900-\u097F]/;
+
 function pickVoice(lang) {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return null;
   const voices = window.speechSynthesis.getVoices();
-  const prefix = lang.split('-')[0];
-  return voices.find((v) => v.lang === lang) || voices.find((v) => v.lang.startsWith(prefix)) || null;
+  if (!voices || !voices.length) return null;
+
+  const targetLang = (lang || 'en-IN').toLowerCase();
+  const prefix = targetLang.split('-')[0];
+
+  // Prefer high-quality natural/Google/Microsoft voices matching exact locale first
+  const exactMatches = voices.filter((v) => v.lang && v.lang.toLowerCase().replace('_', '-') === targetLang);
+  if (exactMatches.length) {
+    return exactMatches.find((v) => /google|natural|microsoft/i.test(v.name)) || exactMatches[0];
+  }
+
+  // Fallback to language prefix match (e.g. 'hi' or 'en')
+  const prefixMatches = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith(prefix));
+  if (prefixMatches.length) {
+    return prefixMatches.find((v) => /google|natural|microsoft/i.test(v.name)) || prefixMatches[0];
+  }
+
+  return voices[0] || null;
 }
 
 export function useSpeaker() {
   const [speakingId, setSpeakingId] = useState(null);
   const supported = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
+  // Pre-load voices on mount so first click picks the right Hindi/English voice
+  useEffect(() => {
+    if (!supported) return undefined;
+    window.speechSynthesis.getVoices();
+    const handleVoicesChanged = () => {
+      window.speechSynthesis.getVoices();
+    };
+    if (typeof window.speechSynthesis.addEventListener === 'function') {
+      window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
+      return () => window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+    }
+    window.speechSynthesis.onvoiceschanged = handleVoicesChanged;
+    return undefined;
+  }, [supported]);
+
   const stop = useCallback(() => {
-    if (supported) window.speechSynthesis.cancel();
+    if (supported) {
+      window.speechSynthesis.cancel();
+    }
     setSpeakingId(null);
   }, [supported]);
 
   const speak = useCallback((id, text, { personaId, lang = 'en-IN' } = {}) => {
-    if (!supported) return;
+    if (!supported || !text) return;
     window.speechSynthesis.cancel();
-    if (speakingId === id) {
-      setSpeakingId(null);
-      return;
-    }
+
+    // Auto-detect Devanagari script so Hindi rewrites always use a Hindi voice
+    const effectiveLang = DEVANAGARI_RE.test(text) ? 'hi-IN' : lang;
+
     const utterance = new SpeechSynthesisUtterance(text);
     const style = VOICE_STYLE[personaId] || { rate: 1, pitch: 1 };
     utterance.rate = style.rate;
     utterance.pitch = style.pitch;
-    utterance.lang = lang;
-    const voice = pickVoice(lang);
-    if (voice) utterance.voice = voice;
+    utterance.lang = effectiveLang;
+
+    const voice = pickVoice(effectiveLang);
+    if (voice) {
+      utterance.voice = voice;
+    }
+
     utterance.onend = () => setSpeakingId(null);
-    utterance.onerror = () => setSpeakingId(null);
+    utterance.onerror = (e) => {
+      if (e.error !== 'interrupted' && e.error !== 'canceled') {
+        console.warn('Speech synthesis error:', e);
+      }
+      setSpeakingId(null);
+    };
+
     setSpeakingId(id);
     window.speechSynthesis.speak(utterance);
-  }, [speakingId, supported]);
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
+  }, [supported]);
 
-  useEffect(() => () => { if (supported) window.speechSynthesis.cancel(); }, [supported]);
+  const toggle = useCallback((id, text, opts = {}) => {
+    if (speakingId === id) {
+      stop();
+    } else {
+      speak(id, text, opts);
+    }
+  }, [speakingId, stop, speak]);
 
-  return { supported, speakingId, speak, stop };
+  useEffect(() => () => {
+    if (supported) window.speechSynthesis.cancel();
+  }, [supported]);
+
+  return { supported, speakingId, speak, stop, toggle };
 }

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 MAX_DRAFT_CHARS = 5000
 MAX_PERSONAS = 6
+MAX_CUSTOM_LIBRARY = 24
 
 
 class SliderSettings(BaseModel):
@@ -71,7 +72,7 @@ class TransformRequest(BaseModel):
         max_length=MAX_PERSONAS,
         description="Target persona ids to generate (built-in or custom)",
     )
-    custom_personas: List[CustomPersona] = Field(default_factory=list, max_length=MAX_PERSONAS)
+    custom_personas: List[CustomPersona] = Field(default_factory=list, max_length=MAX_CUSTOM_LIBRARY)
     channel: Literal["email", "slack", "whatsapp", "linkedin", "sms"] = "email"
     length: Literal["one_liner", "short", "standard"] = "standard"
     language: Literal["en", "hi", "hinglish"] = "en"

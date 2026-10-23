@@ -19,6 +19,7 @@ import {
   SLIDERS,
   DEFAULT_SLIDERS,
   MAX_DRAFT_CHARS,
+  MAX_ACTIVE_PERSONAS,
   DEMO_DRAFT
 } from './constants';
 
@@ -144,6 +145,12 @@ export default function App() {
 
   const speaker = useSpeaker();
 
+  useEffect(() => {
+    if (speechInput.error) {
+      notify(speechInput.error, 'error');
+    }
+  }, [speechInput.error, notify]);
+
   // Keyboard shortcut: Ctrl+Enter / Cmd+Enter
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -163,25 +170,37 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Primary Transform Handler
-  async function handleTransform(textOverride = null) {
-    const textToRun = textOverride !== null ? textOverride : draft;
-    if (!textToRun.trim()) {
-      notify('Please enter a draft to transform.', 'error');
+  // Primary Transform Handler (accepts string draft override or options object)
+  async function handleTransform(arg = null) {
+    const opts = typeof arg === 'string' ? { draft: arg } : (arg && typeof arg === 'object' && !('nativeEvent' in arg) ? arg : {});
+    const textToRun = opts.draft !== undefined ? opts.draft : draft;
+    const targetChannel = opts.channel !== undefined ? opts.channel : channel;
+    const targetLength = opts.length !== undefined ? opts.length : length;
+    const targetLanguage = opts.language !== undefined ? opts.language : language;
+
+    if (!textToRun.trim() || textToRun.trim().length < 2) {
+      notify('Please enter at least 2 characters to transform.', 'error');
+      return;
+    }
+    if (textToRun.length > MAX_DRAFT_CHARS) {
+      notify(`Draft exceeds maximum length of ${MAX_DRAFT_CHARS} characters.`, 'error');
       return;
     }
 
+    speaker.stop();
     setLoading(true);
     try {
+      const activeIds = (selectedPersonaIds.length > 0 ? selectedPersonaIds : ['executive', 'peer', 'legal', 'gen_z']).slice(0, MAX_ACTIVE_PERSONAS);
       const payload = {
         draft: textToRun,
-        personas: selectedPersonaIds.length > 0 ? selectedPersonaIds : ['executive', 'peer', 'legal', 'gen_z'],
-        channel,
-        length,
-        language,
+        personas: activeIds,
+        channel: targetChannel,
+        length: targetLength,
+        language: targetLanguage,
         privacy_mode: privacyMode,
         sliders: slidersOpen ? sliders : DEFAULT_SLIDERS,
-        custom_personas: customPersonas
+        custom_personas: customPersonas.filter((cp) => activeIds.includes(cp.id)),
+        fresh: Boolean(opts.fresh)
       };
 
       const resp = await api.transform(payload);
@@ -195,12 +214,13 @@ export default function App() {
 
       history.add({
         draft: textToRun,
-        channel,
-        language,
+        channel: targetChannel,
+        language: targetLanguage,
         result: resp
       });
 
-      notify(`Transformed across ${resIds.length} personas via ${resp.model_used.replace('models/', '')}`, 'success');
+      const langLabel = LANGUAGES.find((l) => l.id === targetLanguage)?.label || targetLanguage;
+      notify(`Transformed (${langLabel}) across ${resIds.length} personas via ${resp.model_used.replace('models/', '')}`, 'success');
     } catch (err) {
       console.error('Transform error:', err);
       notify(err.message || 'Transform failed. Check your connection or API quota.', 'error');
@@ -209,9 +229,10 @@ export default function App() {
     }
   }
 
-  // Single-Persona Retry
+  // Single-Persona Retry (bypasses response cache with fresh: true)
   async function handleRegenerateSingle(personaId) {
-    if (!draft.trim()) return;
+    if (!draft.trim() || draft.length > MAX_DRAFT_CHARS) return;
+    speaker.stop();
     setRegeneratingId(personaId);
     try {
       const payload = {
@@ -222,7 +243,8 @@ export default function App() {
         language,
         privacy_mode: privacyMode,
         sliders: slidersOpen ? sliders : DEFAULT_SLIDERS,
-        custom_personas: customPersonas
+        custom_personas: customPersonas.filter((cp) => cp.id === personaId),
+        fresh: true
       };
 
       const resp = await api.transform(payload);
@@ -237,7 +259,7 @@ export default function App() {
             [personaId]: resp.results[personaId]
           }
         } : resp));
-        notify(`Regenerated ${registry[personaId]?.name || personaId}!`, 'success');
+        notify(`Regenerated fresh variation for ${registry[personaId]?.name || personaId}!`, 'success');
       }
     } catch (err) {
       notify(`Retry failed: ${err.message}`, 'error');
@@ -248,8 +270,15 @@ export default function App() {
 
   // Tone Decoder
   async function handleDecode(incomingOverride = null) {
-    const textToDecode = incomingOverride !== null ? incomingOverride : decoderInput;
-    if (!textToDecode.trim()) return;
+    const textToDecode = typeof incomingOverride === 'string' ? incomingOverride : decoderInput;
+    if (!textToDecode.trim() || textToDecode.trim().length < 2) {
+      notify('Please paste an incoming message to decode.', 'error');
+      return;
+    }
+    if (textToDecode.length > MAX_DRAFT_CHARS) {
+      notify(`Message exceeds ${MAX_DRAFT_CHARS} characters.`, 'error');
+      return;
+    }
 
     setDecoderLoading(true);
     try {
@@ -272,7 +301,7 @@ export default function App() {
     }
   };
 
-  // Persona selection toggle
+  // Persona selection toggle (capped at MAX_ACTIVE_PERSONAS)
   const togglePersonaSelection = (id) => {
     setSelectedPersonaIds((prev) => {
       if (prev.includes(id)) {
@@ -281,6 +310,10 @@ export default function App() {
           return prev;
         }
         return prev.filter((pid) => pid !== id);
+      }
+      if (prev.length >= MAX_ACTIVE_PERSONAS) {
+        notify(`Maximum ${MAX_ACTIVE_PERSONAS} personas can run simultaneously.`, 'info');
+        return prev;
       }
       return [...prev, id];
     });
@@ -293,10 +326,14 @@ export default function App() {
       notify('Please provide both name and prompt description.', 'error');
       return;
     }
+    if (foundryDesc.trim().length < 5) {
+      notify('Tone instructions must be at least 5 characters.', 'error');
+      return;
+    }
     const newId = slugifyPersonaId(foundryName, customPersonas.map((p) => p.id));
-    const created = { id: newId, name: foundryName.trim(), description: foundryDesc.trim() };
+    const created = { id: newId, name: foundryName.trim().slice(0, 40), description: foundryDesc.trim().slice(0, 400) };
     setCustomPersonas((prev) => [...prev, created]);
-    setSelectedPersonaIds((prev) => [...prev, newId]);
+    setSelectedPersonaIds((prev) => (prev.length >= MAX_ACTIVE_PERSONAS ? [...prev.slice(1), newId] : [...prev, newId]));
     setActivePersonaId(newId);
     setFoundryName('');
     setFoundryDesc('');
@@ -374,7 +411,7 @@ export default function App() {
           <div>
             <div className="brand-title">
               <span>PrismTone</span>
-              <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', letterSpacing: '0.4px' }}>
+              <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'var(--accent-surface)', color: 'var(--accent)', letterSpacing: '0.4px', border: '1px solid var(--border-subtle)' }}>
                 AI ENGINE
               </span>
             </div>
@@ -391,9 +428,9 @@ export default function App() {
             className="stage-btn"
             onClick={runOfficialDemo}
             title="Load Official Vibeathon Outage Demo"
-            style={{ borderColor: 'rgba(99,102,241,0.5)', background: 'rgba(99,102,241,0.12)', color: '#c7d2fe' }}
+            style={{ borderColor: 'rgba(99,102,241,0.45)', background: 'var(--accent-surface)', color: 'var(--accent)' }}
           >
-            <Zap size={14} color="#818cf8" />
+            <Zap size={14} color="var(--accent-light)" />
             <span>Vibeathon Demo</span>
           </button>
 
@@ -433,10 +470,10 @@ export default function App() {
           {/* Model Status Telemetry */}
           <div
             className="stage-btn"
-            style={{ cursor: 'default', background: 'rgba(16,185,129,0.08)', borderColor: 'rgba(16,185,129,0.25)', color: '#34d399' }}
-            title="Active Model: Gemini 3.6 Flash"
+            style={{ cursor: 'default', background: 'rgba(16,185,129,0.1)', borderColor: 'rgba(16,185,129,0.3)', color: 'var(--success)' }}
+            title="Active AI Engine"
           >
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', display: 'inline-block' }} />
             <span className="mono" style={{ fontSize: 11 }}>
               {results?.model_used ? results.model_used.replace('models/', '') : 'gemini-3.6-flash'}
             </span>
@@ -568,8 +605,8 @@ export default function App() {
                   }}
                 >
                   <div className="row-center">
-                    <span className="mic-active-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />
-                    <span style={{ fontSize: 12, color: '#fca5a5' }}>
+                    <span className="mic-active-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }} />
+                    <span style={{ fontSize: 12, color: 'var(--danger)' }}>
                       <strong>Dictating:</strong> {speechInput.interim || 'Listening to your microphone...'}
                     </span>
                   </div>
@@ -587,8 +624,8 @@ export default function App() {
                       className={`stage-btn ${speechInput.listening ? 'mic-active-pulse' : ''}`}
                       style={{
                         padding: '4px 10px',
-                        background: speechInput.listening ? 'rgba(239,68,68,0.2)' : undefined,
-                        color: speechInput.listening ? '#fca5a5' : undefined
+                        background: speechInput.listening ? 'rgba(239,68,68,0.14)' : undefined,
+                        color: speechInput.listening ? 'var(--danger)' : undefined
                       }}
                       onClick={speechInput.listening ? speechInput.stop : speechInput.start}
                       title="Dictate with voice input"
@@ -601,8 +638,8 @@ export default function App() {
 
                 <div className="row-center subtle">
                   <span>Shortcut:</span>
-                  <kbd style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.08)', fontSize: 10, fontFamily: 'monospace' }}>
-                    ⌘ Enter
+                  <kbd style={{ padding: '2px 6px', borderRadius: 4, background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-hairline)', fontSize: 10, fontFamily: 'var(--font-mono)' }}>
+                    Ctrl + Enter
                   </kbd>
                 </div>
               </div>
@@ -621,7 +658,7 @@ export default function App() {
                     className="preset-chip"
                     onClick={() => {
                       setDraft(p.draft);
-                      handleTransform(p.draft);
+                      handleTransform({ draft: p.draft });
                     }}
                   >
                     <span className="row-center">
@@ -640,7 +677,17 @@ export default function App() {
                 <span className="subtle" style={{ fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>
                   {getChannelIcon(channel)} CHANNEL
                 </span>
-                <select className="control-select" value={channel} onChange={(e) => setChannel(e.target.value)}>
+                <select
+                  className="control-select"
+                  value={channel}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setChannel(next);
+                    if (draft.trim().length >= 2 && !loading) {
+                      handleTransform({ channel: next });
+                    }
+                  }}
+                >
                   {CHANNELS.map((c) => (
                     <option key={c.id} value={c.id}>{c.label}</option>
                   ))}
@@ -649,7 +696,17 @@ export default function App() {
 
               <div className="control-item">
                 <span className="subtle" style={{ fontSize: 10, fontWeight: 700 }}>LENGTH</span>
-                <select className="control-select" value={length} onChange={(e) => setLength(e.target.value)}>
+                <select
+                  className="control-select"
+                  value={length}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setLength(next);
+                    if (draft.trim().length >= 2 && !loading) {
+                      handleTransform({ length: next });
+                    }
+                  }}
+                >
                   {LENGTHS.map((l) => (
                     <option key={l.id} value={l.id}>{l.label}</option>
                   ))}
@@ -658,7 +715,17 @@ export default function App() {
 
               <div className="control-item">
                 <span className="subtle" style={{ fontSize: 10, fontWeight: 700 }}>LANGUAGE</span>
-                <select className="control-select" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                <select
+                  className="control-select"
+                  value={language}
+                  onChange={(e) => {
+                    const nextLang = e.target.value;
+                    setLanguage(nextLang);
+                    if (draft.trim().length >= 2 && !loading) {
+                      handleTransform({ language: nextLang });
+                    }
+                  }}
+                >
                   {LANGUAGES.map((l) => (
                     <option key={l.id} value={l.id}>{l.label}</option>
                   ))}
@@ -673,8 +740,8 @@ export default function App() {
                 className="stage-btn"
                 style={{
                   background: privacyMode ? 'rgba(16,185,129,0.1)' : undefined,
-                  borderColor: privacyMode ? 'rgba(16,185,129,0.3)' : undefined,
-                  color: privacyMode ? '#34d399' : undefined
+                  borderColor: privacyMode ? 'rgba(16,185,129,0.35)' : undefined,
+                  color: privacyMode ? 'var(--success)' : undefined
                 }}
                 onClick={() => setPrivacyMode(!privacyMode)}
                 title="Client-side PII Redaction Guard"
@@ -687,14 +754,21 @@ export default function App() {
                 type="button"
                 className="stage-btn"
                 style={{
-                  background: slidersOpen ? 'rgba(99,102,241,0.15)' : undefined,
+                  background: slidersOpen ? 'var(--accent-surface)' : undefined,
                   borderColor: slidersOpen ? 'rgba(99,102,241,0.4)' : undefined,
-                  color: slidersOpen ? '#a5b4fc' : undefined
+                  color: slidersOpen ? 'var(--accent)' : undefined
                 }}
                 onClick={() => setSlidersOpen(!slidersOpen)}
               >
                 <Sliders size={12} />
-                <span>Tone Sliders {slidersOpen ? '▲' : '▼'}</span>
+                <span>Tone Sliders</span>
+                <ChevronRight
+                  size={12}
+                  style={{
+                    transform: slidersOpen ? 'rotate(-90deg)' : 'rotate(90deg)',
+                    transition: 'transform 0.2s ease'
+                  }}
+                />
               </button>
             </div>
 
@@ -702,10 +776,11 @@ export default function App() {
             {slidersOpen && (
               <div className="sliders-sheet">
                 <div className="row-between">
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc' }}>5-Axis Tone Calibration</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>5-Axis Tone Calibration</span>
                   <button
                     type="button"
-                    style={{ fontSize: 10, color: '#94a3b8' }}
+                    className="subtle"
+                    style={{ fontSize: 10 }}
                     onClick={() => setSliders(DEFAULT_SLIDERS)}
                   >
                     Reset
@@ -831,8 +906,8 @@ export default function App() {
                 {/* Fact Guard Matrix Drawer */}
                 {factsDrawerOpen && (
                   <div className="fact-guard-matrix">
-                    <div className="row-between" style={{ paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc' }}>Fact Guard Verification Matrix</span>
+                    <div className="row-between" style={{ paddingBottom: 6, borderBottom: '1px solid var(--border-hairline)' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)' }}>Fact Guard Verification Matrix</span>
                       <span className="subtle" style={{ fontSize: 10 }}>Dates, numbers, names &amp; commitments</span>
                     </div>
                     {currentPersonaCard.facts_found.length === 0 && (
@@ -841,12 +916,15 @@ export default function App() {
                     {currentPersonaCard.facts_found.map((f, i) => (
                       <div key={i} className="fact-matrix-row">
                         <div>
-                          <code style={{ color: '#ffffff' }}>{f.text}</code>
+                          <code style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{f.text}</code>
                           <span className="subtle" style={{ marginLeft: 6 }}>({f.category})</span>
+                          {f.explanation && (
+                            <span className="subtle" style={{ marginLeft: 8, fontSize: 11 }}>— {f.explanation}</span>
+                          )}
                         </div>
                         <span style={{
                           fontWeight: 700,
-                          color: f.status === 'preserved' ? '#34d399' : f.status === 'modified' ? '#fbbf24' : '#f87171'
+                          color: f.status === 'preserved' ? 'var(--success)' : f.status === 'modified' ? 'var(--warning)' : 'var(--danger)'
                         }}>
                           {f.status}
                         </span>
@@ -897,8 +975,8 @@ export default function App() {
                     padding: '8px 12px',
                     borderRadius: 8,
                     background: 'rgba(239,68,68,0.1)',
-                    border: '1px solid rgba(239,68,68,0.25)',
-                    color: '#fca5a5',
+                    border: '1px solid rgba(239,68,68,0.28)',
+                    color: 'var(--danger)',
                     fontSize: 12
                   }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0 }} />
@@ -925,7 +1003,7 @@ export default function App() {
                       <button
                         type="button"
                         className={`stage-btn ${speaker.speakingId === currentPersonaCard.persona_id ? 'speaking' : ''}`}
-                        onClick={() => speaker.toggle(currentPersonaCard.persona_id, currentPersonaCard.rewrite)}
+                        onClick={() => speaker.toggle(currentPersonaCard.persona_id, currentPersonaCard.rewrite, { personaId: currentPersonaCard.persona_id, lang: speechLang })}
                         title="Listen to this persona's voice style"
                       >
                         {speaker.speakingId === currentPersonaCard.persona_id ? (
@@ -991,6 +1069,17 @@ export default function App() {
                           <span className={`fact-guard-badge ${item.fact_guard_status}`} style={{ fontSize: 11, padding: '3px 8px' }}>
                             <ShieldCheck size={12} /> {item.fact_guard_status}
                           </span>
+                          {speaker.supported && (
+                            <button
+                              type="button"
+                              className={`stage-btn ${speaker.speakingId === item.persona_id ? 'speaking' : ''}`}
+                              style={{ padding: '3px 8px', fontSize: 11 }}
+                              onClick={() => speaker.toggle(item.persona_id, item.rewrite, { personaId: item.persona_id, lang: speechLang })}
+                              title="Listen"
+                            >
+                              <Volume2 size={11} /> {speaker.speakingId === item.persona_id ? 'Playing' : 'Listen'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="stage-btn"
@@ -1014,8 +1103,8 @@ export default function App() {
                         {item.rewrite}
                       </div>
 
-                      <div className="row-between subtle" style={{ fontSize: 11, borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: 10 }}>
-                        <span>Change Score: <strong style={{ color: '#818cf8' }}>{item.metrics.change_score}/100</strong></span>
+                      <div className="row-between subtle" style={{ fontSize: 11, borderTop: '1px solid var(--border-hairline)', paddingTop: 10 }}>
+                        <span>Change Score: <strong style={{ color: 'var(--accent-light)' }}>{item.metrics.change_score}/100</strong></span>
                         <span>Formality: <strong>{item.metrics.formality}</strong> • Warmth: <strong>{item.metrics.warmth}</strong> • Brevity: <strong>{item.metrics.brevity}</strong></span>
                         <span>{item.metrics.reading_level_label}</span>
                       </div>
@@ -1118,14 +1207,21 @@ export default function App() {
                       >
                         <div className="row-between" style={{ marginBottom: 8 }}>
                           <span style={{ fontWeight: 700, fontSize: 14 }}>{c.persona_name}</span>
-                          <span className="mono" style={{ fontSize: 12, color: '#818cf8' }}>
+                          <span className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>
                             Score: {c.metrics.change_score}/100
                           </span>
                         </div>
-                        <div className="row-between subtle" style={{ fontSize: 12 }}>
+                        <div className="row-between subtle" style={{ fontSize: 12, flexWrap: 'wrap' }}>
                           <span>Word Count: <strong>{c.metrics.word_count}</strong> ({c.metrics.length_change_pct >= 0 ? '+' : ''}{c.metrics.length_change_pct}%)</span>
-                          <span>Flesch Grade: <strong>{c.metrics.flesch_reading_ease}</strong> ({c.metrics.reading_level_label})</span>
-                          <span>Fact Guard: <strong style={{ color: '#34d399' }}>{c.fact_guard_status}</strong></span>
+                          <span>Reading Grade: <strong>{c.metrics.reading_grade}</strong> • Ease: <strong>{c.metrics.readability}/10</strong></span>
+                          <span>
+                            Fact Guard:{' '}
+                            <strong style={{
+                              color: c.fact_guard_status === 'green' ? 'var(--success)' : c.fact_guard_status === 'amber' ? 'var(--warning)' : 'var(--danger)'
+                            }}>
+                              {c.fact_guard_status}
+                            </strong>
+                          </span>
                         </div>
                       </div>
                     );
@@ -1207,7 +1303,7 @@ export default function App() {
             />
 
             <div className="row-between">
-              <span className="subtle" style={{ fontSize: 12 }}>Shortcut: ⌘ Enter</span>
+              <span className="subtle" style={{ fontSize: 12 }}>Shortcut: Ctrl + Enter</span>
               <button
                 type="button"
                 className="btn-prism-run"
@@ -1228,53 +1324,71 @@ export default function App() {
               <div className="decoder-insight-column">
                 <div className="row-between" style={{ borderBottom: '1px solid var(--border-hairline)', paddingBottom: 10 }}>
                   <h4 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <ShieldCheck size={16} color="#10b981" />
+                    <ShieldCheck size={16} color="var(--success)" />
                     <span>Linguistic Analysis</span>
                   </h4>
+                  <span className="mono subtle" style={{ fontSize: 11 }}>
+                    {decoderResult.model_used?.replace('models/', '') || 'gemini-3.6-flash'}
+                  </span>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700 }}>Surface Meaning</span>
-                  <p style={{ fontSize: 14, background: 'var(--bg-input)', padding: 12, borderRadius: 8, border: '1px solid var(--border-hairline)' }}>
-                    {decoderResult.surface_meaning}
-                  </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700 }}>Dominant Tone &amp; Formality</span>
+                  <div className="row-between" style={{ fontSize: 14, background: 'var(--bg-surface-elevated)', padding: '12px 14px', borderRadius: 8, border: '1px solid var(--border-hairline)' }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>{decoderResult.dominant_tone}</strong>
+                    <span className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>
+                      Formality: {decoderResult.formality_score}/10
+                    </span>
+                  </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span className="row-center" style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700, color: '#818cf8', gap: 6 }}>
-                    <Search size={13} color="#818cf8" />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span className="row-center" style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700, color: 'var(--accent)', gap: 6 }}>
+                    <Search size={13} color="var(--accent)" />
                     <span>True Subtext &amp; Unspoken Intent</span>
                   </span>
-                  <p style={{ fontSize: 14, fontWeight: 500, background: 'rgba(99,102,241,0.08)', padding: 14, borderRadius: 8, border: '1px solid rgba(99,102,241,0.25)' }}>
-                    {decoderResult.subtext}
+                  <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)', background: 'var(--accent-surface)', padding: 14, borderRadius: 8, border: '1px solid rgba(99,102,241,0.3)' }}>
+                    {decoderResult.hidden_subtext}
                   </p>
                 </div>
 
-                <div className="row-between" style={{ background: 'var(--bg-input)', padding: 12, borderRadius: 8, border: '1px solid var(--border-hairline)' }}>
+                <div className="row-between" style={{ background: 'var(--bg-surface-elevated)', padding: '12px 14px', borderRadius: 8, border: '1px solid var(--border-hairline)' }}>
                   <div>
-                    <span className="subtle" style={{ fontSize: 10, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>Emotional Thermometer</span>
-                    <strong style={{ color: '#f59e0b', fontSize: 14 }}>{decoderResult.emotional_temperature}</strong>
+                    <span className="subtle" style={{ fontSize: 10, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>Sentiment Posture</span>
+                    <strong style={{ color: 'var(--warning)', fontSize: 14 }}>{decoderResult.sentiment}</strong>
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <span className="subtle" style={{ fontSize: 10, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>Urgency Level</span>
-                    <strong style={{ color: '#ec4899', fontSize: 14 }}>{decoderResult.urgency_level}</strong>
+                    <strong style={{
+                      color: decoderResult.urgency_level === 'Critical' || decoderResult.urgency_level === 'High' ? 'var(--danger)' : 'var(--accent)',
+                      fontSize: 14
+                    }}>
+                      {decoderResult.urgency_level}
+                    </strong>
                   </div>
                 </div>
 
-                {decoderResult.hidden_motives && (
+                {decoderResult.key_signals?.length > 0 && (
                   <div style={{
                     display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: 8,
-                    padding: 12,
+                    flexDirection: 'column',
+                    gap: 6,
+                    padding: '12px 14px',
                     borderRadius: 8,
                     background: 'rgba(245,158,11,0.1)',
                     border: '1px solid rgba(245,158,11,0.3)',
-                    color: '#fbbf24',
+                    color: 'var(--text-primary)',
                     fontSize: 12
                   }}>
-                    <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <span><strong>Hidden Motive / Escalation Risk:</strong> {decoderResult.hidden_motives}</span>
+                    <div className="row-center" style={{ color: 'var(--warning)', fontWeight: 700 }}>
+                      <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                      <span>Detected Linguistic Signals</span>
+                    </div>
+                    <ul style={{ paddingLeft: 18, color: 'var(--text-secondary)' }}>
+                      {decoderResult.key_signals.map((sig, sIdx) => (
+                        <li key={sIdx} style={{ marginBottom: 2 }}>{sig}</li>
+                      ))}
+                    </ul>
                   </div>
                 )}
               </div>
@@ -1283,20 +1397,20 @@ export default function App() {
               <div className="decoder-insight-column">
                 <div className="row-between" style={{ borderBottom: '1px solid var(--border-hairline)', paddingBottom: 10 }}>
                   <h4 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Send size={16} color="#818cf8" />
+                    <Send size={16} color="var(--accent-light)" />
                     <span>Ready-to-Send Tactical Responses</span>
                   </h4>
                   <span className="subtle" style={{ fontSize: 11 }}>1-click copy</span>
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {decoderResult.recommended_responses?.map((reply, idx) => (
+                  {decoderResult.suggested_reply_strategies?.map((reply, idx) => (
                     <div
                       key={idx}
                       style={{
                         padding: 14,
                         borderRadius: 10,
-                        background: 'var(--bg-input)',
+                        background: 'var(--bg-surface-elevated)',
                         border: '1px solid var(--border-hairline)',
                         display: 'flex',
                         flexDirection: 'column',
@@ -1304,23 +1418,30 @@ export default function App() {
                       }}
                     >
                       <div className="row-between">
-                        <span style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: '2px 8px',
-                          borderRadius: 999,
-                          background: 'rgba(99,102,241,0.15)',
-                          color: '#a5b4fc',
-                          textTransform: 'uppercase'
-                        }}>
-                          {reply.strategy}
-                        </span>
+                        <div>
+                          <span style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: 999,
+                            background: 'var(--accent-surface)',
+                            color: 'var(--accent)',
+                            textTransform: 'uppercase'
+                          }}>
+                            {reply.title}
+                          </span>
+                          {reply.vibe && (
+                            <span className="subtle" style={{ fontSize: 11, marginLeft: 8 }}>
+                              {reply.vibe}
+                            </span>
+                          )}
+                        </div>
 
                         <button
                           type="button"
-                          className="stage-btn"
+                          className={`stage-btn ${copiedReplyIdx === idx ? 'copied' : ''}`}
                           style={{ padding: '3px 8px', fontSize: 11 }}
-                          onClick={() => handleCopyText(reply.text, () => {
+                          onClick={() => handleCopyText(reply.recommended_snippet, () => {
                             setCopiedReplyIdx(idx);
                             setTimeout(() => setCopiedReplyIdx(null), 2000);
                           })}
@@ -1330,8 +1451,8 @@ export default function App() {
                         </button>
                       </div>
 
-                      <p style={{ fontSize: 13, lineHeight: 1.6, color: '#f1f5f9' }}>
-                        "{reply.text}"
+                      <p style={{ fontSize: 13.5, lineHeight: 1.65, color: 'var(--text-primary)' }}>
+                        &ldquo;{reply.recommended_snippet}&rdquo;
                       </p>
                     </div>
                   ))}
@@ -1457,7 +1578,7 @@ export default function App() {
                         <button
                           type="button"
                           className="stage-btn"
-                          style={{ padding: '3px 8px', color: '#fca5a5' }}
+                          style={{ padding: '3px 8px', color: 'var(--danger)' }}
                           onClick={() => handleDeleteCustomPersona(p.id)}
                           title="Delete persona"
                         >
@@ -1515,7 +1636,7 @@ export default function App() {
                 <button
                   type="button"
                   className="stage-btn"
-                  style={{ color: '#fca5a5' }}
+                  style={{ color: 'var(--danger)' }}
                   onClick={() => {
                     history.clearUnstarred();
                     notify('Cleared unstarred history items.', 'info');
@@ -1529,7 +1650,7 @@ export default function App() {
 
           <div className="vault-timeline">
             {filteredHistory.length === 0 ? (
-              <div style={{ padding: 48, textAlign: 'center', color: '#94a3b8' }}>
+              <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-tertiary)' }}>
                 <p>No history entries found.</p>
               </div>
             ) : (
@@ -1539,6 +1660,8 @@ export default function App() {
                   className="vault-item-row"
                   onClick={() => {
                     setDraft(entry.draft);
+                    if (entry.channel) setChannel(entry.channel);
+                    if (entry.language) setLanguage(entry.language);
                     if (entry.result) setResults(entry.result);
                     setActiveTab('studio');
                     notify('Loaded transformation into Studio!', 'info');
@@ -1549,15 +1672,15 @@ export default function App() {
                       <span className="mono subtle" style={{ fontSize: 11 }}>
                         {new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
-                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
+                      <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 4, background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-hairline)', color: 'var(--text-secondary)' }}>
                         {entry.channel}
                       </span>
-                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
+                      <span style={{ fontSize: 11, padding: '1px 7px', borderRadius: 4, background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-hairline)', color: 'var(--text-secondary)' }}>
                         {entry.language}
                       </span>
                     </div>
                     <p style={{ fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      "{entry.draft}"
+                      &ldquo;{entry.draft}&rdquo;
                     </p>
                   </div>
 
@@ -1568,12 +1691,12 @@ export default function App() {
                       style={{ padding: '6px 10px' }}
                       onClick={() => history.toggleStar(entry.id)}
                     >
-                      <Star size={13} fill={entry.starred ? '#fbbf24' : 'none'} color={entry.starred ? '#fbbf24' : '#94a3b8'} />
+                      <Star size={13} fill={entry.starred ? '#fbbf24' : 'none'} color={entry.starred ? '#fbbf24' : 'var(--text-tertiary)'} />
                     </button>
                     <button
                       type="button"
                       className="stage-btn"
-                      style={{ padding: '6px 10px', color: '#fca5a5' }}
+                      style={{ padding: '6px 10px', color: 'var(--danger)' }}
                       onClick={() => history.remove(entry.id)}
                     >
                       <Trash2 size={13} />

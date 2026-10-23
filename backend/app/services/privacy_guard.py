@@ -61,11 +61,11 @@ def mask_pii(text: str) -> Tuple[str, Dict[str, str]]:
 
 def unmask_pii(text: str, mapping: Dict[str, str]) -> str:
     """
-    Restores original sensitive values from placeholders.
+    Restores original sensitive values from placeholders (case-insensitive).
     """
     result = text
     for placeholder, original in mapping.items():
-        result = result.replace(placeholder, original)
-        # Handle lowercase variations LLMs sometimes produce
-        result = result.replace(placeholder.lower(), original)
+        result = re.sub(re.escape(placeholder), lambda _: original, result, flags=re.IGNORECASE)
+        bare = placeholder.strip("[]")
+        result = re.sub(rf"\b{re.escape(bare)}\b", lambda _: original, result, flags=re.IGNORECASE)
     return result

@@ -66,6 +66,29 @@ class TestServices(unittest.TestCase):
         self.assertEqual(brevity_score(500), 1.0)
         self.assertTrue(1.0 <= readability_score(30) <= 10.0)
 
+    def test_fact_guard_supports_hindi_and_hinglish_equivalents(self):
+        facts = extract_facts_from_text(DEMO_DRAFT)
+        hindi_rewrite = (
+            "नमस्ते टीम, सर्वर समस्या पर Raj अभी मुख्य समाधान पर काम कर रहे हैं "
+            "और हम सब मिलकर शुक्रवार तक इसे पूरा कर लेंगे।"
+        )
+        verified_hi, status_hi = verify_facts(facts, hindi_rewrite, DEMO_DRAFT, "peer")
+        self.assertEqual(status_hi, "green")
+        self.assertTrue(all(f.status == "preserved" for f in verified_hi))
+
+        hinglish_rewrite = (
+            "Production server me downtime aaya tha. Emergency patch deploy ho raha hai "
+            "aur Friday EOD tak full resolution target hai."
+        )
+        _, status_hinglish = verify_facts(facts, hinglish_rewrite, DEMO_DRAFT, "executive")
+        self.assertEqual(status_hinglish, "green")
+
+    def test_privacy_unmask_case_insensitive(self):
+        masked, mapping = mask_pii("Ping Raj at raj@corp.com")
+        restored = unmask_pii(masked.lower(), mapping)
+        self.assertIn("Raj", restored)
+        self.assertIn("raj@corp.com", restored)
+
 
 class TestApi(OfflineTestCase):
     def test_health(self):
@@ -111,6 +134,31 @@ class TestApi(OfflineTestCase):
         body = resp.json()
         self.assertEqual(body["sentiment"], "Passive-Aggressive")
         self.assertEqual(len(body["suggested_reply_strategies"]), 3)
+
+    def test_transform_offline_hinglish_and_hindi(self):
+        # Hinglish demo transform
+        resp_hg = self.client.post("/api/v1/transform", json={"draft": DEMO_DRAFT, "language": "hinglish"})
+        self.assertEqual(resp_hg.status_code, 200)
+        hg_results = resp_hg.json()["results"]
+        self.assertIn("raha hai", hg_results["executive"]["rewrite"])
+        self.assertEqual(hg_results["peer"]["fact_guard_status"], "green")
+
+        # Hindi Devanagari demo transform
+        resp_hi = self.client.post("/api/v1/transform", json={"draft": DEMO_DRAFT, "language": "hi"})
+        self.assertEqual(resp_hi.status_code, 200)
+        hi_results = resp_hi.json()["results"]
+        self.assertIn("शुक्रवार", hi_results["executive"]["rewrite"])
+        self.assertIn("Raj", hi_results["peer"]["rewrite"])
+        self.assertEqual(hi_results["executive"]["fact_guard_status"], "green")
+        self.assertEqual(hi_results["peer"]["fact_guard_status"], "green")
+
+        # General non-demo Hindi transform
+        resp_gen_hi = self.client.post(
+            "/api/v1/transform",
+            json={"draft": "Missed the deadline because my laptop died, submit tomorrow.", "language": "hi"},
+        )
+        self.assertEqual(resp_gen_hi.status_code, 200)
+        self.assertIn("कल", resp_gen_hi.json()["results"]["peer"]["rewrite"])
 
 
 if __name__ == "__main__":

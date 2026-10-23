@@ -67,9 +67,26 @@ LENGTH_GUIDES = {
 }
 
 LANGUAGE_GUIDES = {
-    "en": "Write strictly in natural, fluent English.",
-    "hinglish": "Write in natural Indian Hinglish (Roman script blending Hindi & English naturally as used in Indian tech teams).",
-    "hi": "Write in clear, natural Hindi (Devanagari script), keeping technical terms understandable.",
+    "en": (
+        "STRICTLY ENGLISH: Write every 'subject' and 'rewrite' in natural, fluent English."
+    ),
+    "hinglish": (
+        "STRICTLY INDIAN HINGLISH (ROMAN SCRIPT ONLY): Write EVERY 'subject' and 'rewrite' in authentic "
+        "conversational Hinglish using ONLY Latin/Roman alphabet (do NOT use Devanagari characters). "
+        "Naturally blend Hindi grammar, verbs, and connectors (e.g., 'hai', 'hain', 'kar rahe hain', "
+        "'ho jayega', 'tak', 'par', 'milkar', 'zaroor') with workplace English terms ('server', 'patch', "
+        "'deadline', 'team', 'SLA'). Do NOT output plain English — every sentence must genuinely read as "
+        "natural Indian Hinglish tailored to each persona's tone (crisp corporate Hinglish for Executive, "
+        "warm teammate Hinglish for Peer, formal record-keeping Hinglish for Legal, upbeat desi Gen-Z "
+        "Hinglish for Gen-Z)."
+    ),
+    "hi": (
+        "STRICTLY HINDI IN DEVANAGARI SCRIPT (देवनागरी लिपि): Write EVERY 'subject' and 'rewrite' completely "
+        "in natural, fluent Hindi using Devanagari script (e.g., 'सर्वर में समस्या आई थी, शुक्रवार तक समाधान हो जाएगा।'). "
+        "Do NOT write the rewrite in English or Roman Hinglish. Transliterate technical words into Devanagari "
+        "('सर्वर', 'पैच', 'अपडेट', 'टीम', 'डेडलाइन') so Hindi text-to-speech reads smoothly, EXCEPT keep any "
+        "bracketed privacy tokens like [PERSON_1], [EMAIL_1], [PHONE_1], or [IP_1] in exact ASCII characters."
+    ),
 }
 
 OFFLINE_DEMO_PRESETS = {
@@ -111,12 +128,67 @@ OFFLINE_DEMO_PRESETS = {
     },
 }
 
-OFFLINE_HINGLISH = {
-    "executive": "Production server me downtime aaya tha. Emergency patch deploy ho raha hai, aur Friday EOD tak full resolution target hai.",
-    "peer": "Hey team, server issue par sabka support great hai. Raj root-cause fix lead kar rahe hain aur hum Friday tak milkar wrap up kar lenge!",
-    "legal": "Record ke liye bataya jata hai ki server disruption hua tha. Technical review chalu hai aur Friday ya usse pehle corrective patch schedule hai.",
-    "gen_z": "Server ne chhota sa nap le liya tha ngl! No stress — Raj aur squad fix par locked in hain, Friday tak full sorted!",
+OFFLINE_HINGLISH_PRESETS = {
+    "executive": {
+        "subject": "Status Update: Production Server Outage aur Friday Recovery Target",
+        "rewrite": "Production server me unexpected downtime aaya tha. Abhi emergency patch deploy ho raha hai aur Friday EOD tak full resolution aur stability target hai.",
+    },
+    "peer": {
+        "subject": "Friday server fix par quick team sync",
+        "rewrite": "Hey team, server issue par sabke quick support ke liye thanks! Raj abhi root-cause fix lead kar rahe hain aur hum Friday tak milkar sab smoothly wrap up kar lenge. Batao agar kisi cheez me help chahiye!",
+    },
+    "legal": {
+        "subject": "Service Interruption aur Scheduled Rectification ki Suchna",
+        "rewrite": "Record ke liye inform kiya jata hai ki server service me temporary interruption aaya tha. Technical remediation process chalu hai aur Friday ya usse pehle corrective patch schedule kiya gaya hai.",
+    },
+    "gen_z": {
+        "subject": "Server update — Friday tak full fix locked in hai!",
+        "rewrite": "Yaar server ne achanak chhota sa nap le liya tha ngl! Zero stress — Raj aur poora squad abhi patch par locked in hain aur Friday tak sab ekdam sorted ho jayega. We got this!",
+    },
 }
+
+OFFLINE_HINDI_PRESETS = {
+    "executive": {
+        "subject": "स्थिति अपडेट: सर्वर बाधा एवं शुक्रवार तक पूर्ण समाधान का लक्ष्य",
+        "rewrite": "उत्पादन सर्वर में अस्थायी तकनीकी बाधा आई थी। पूर्ण स्थिरता बहाल करने हेतु आपातकालीन पैच लागू किया जा रहा है और शुक्रवार शाम तक अंतिम समाधान निर्धारित है।",
+    },
+    "peer": {
+        "subject": "शुक्रवार तक सर्वर सुधार के संबंध में टीम अपडेट",
+        "rewrite": "नमस्ते टीम, सर्वर समस्या पर आप सभी के त्वरित सहयोग के लिए धन्यवाद। Raj अभी मुख्य समाधान पर काम कर रहे हैं और हम सब मिलकर शुक्रवार तक इसे पूरा कर लेंगे। किसी भी सहायता के लिए बेझिझक बताएं!",
+    },
+    "legal": {
+        "subject": "सेवा अवरोध एवं निर्धारित तकनीकी सुधार की औपचारिक सूचना",
+        "rewrite": "सूचित किया जाता है कि सर्वर सेवा में अस्थायी अवरोध उत्पन्न हुआ था। मानक प्रक्रिया के अंतर्गत तकनीकी सुधार जारी है तथा शुक्रवार या उससे पूर्व समाधान निर्धारित किया गया है।",
+    },
+    "gen_z": {
+        "subject": "सर्वर अपडेट — शुक्रवार तक सब कुछ एकदम सॉर्ट हो जाएगा!",
+        "rewrite": "अरे टीम, सर्वर थोड़ा डाउन हो गया था, पर बिल्कुल टेंशन मत लो! Raj और पूरी स्क्वाड फिक्स पर पूरी तरह जुटी हुई है और शुक्रवार तक सब कुछ सॉर्ट हो जाएगा!",
+    },
+}
+
+
+def _offline_hindi_phrase(text: str) -> str:
+    """Lightweight lexical adapter so general offline Hindi fallbacks read in Devanagari."""
+    replacements = [
+        (r"\bserver went down\b", "सर्वर डाउन हो गया था"),
+        (r"\bserver\b", "सर्वर"),
+        (r"\bfix by\b", "तक समाधान"),
+        (r"\bdeadline\b", "समय-सीमा"),
+        (r"\btomorrow\b", "कल"),
+        (r"\btoday\b", "आज"),
+        (r"\byesterday\b", "बीते कल"),
+        (r"\bmonday\b", "सोमवार"),
+        (r"\btuesday\b", "मंगलवार"),
+        (r"\bwednesday\b", "बुधवार"),
+        (r"\bthursday\b", "गुरुवार"),
+        (r"\bfriday\b", "शुक्रवार"),
+        (r"\bsaturday\b", "शनिवार"),
+        (r"\bsunday\b", "रविवार"),
+    ]
+    out = text
+    for pat, rep in replacements:
+        out = re.sub(pat, rep, out, flags=re.IGNORECASE)
+    return out
 
 
 def resolve_persona_profiles(
@@ -153,6 +225,14 @@ def _build_batch_gemini_prompt(
     sliders: Optional[SliderSettings],
 ) -> str:
     persona_specs = [f'- "{pid}" ({p["name"]}): {p["guide"]}' for pid, p in profiles.items()]
+    lang_directive = LANGUAGE_GUIDES.get(language, LANGUAGE_GUIDES["en"])
+
+    if language == "hi":
+        lang_field_hint = "MUST be written in fluent Hindi (Devanagari script: देवनागरी लिपि)"
+    elif language == "hinglish":
+        lang_field_hint = "MUST be written in natural conversational Indian Hinglish (Roman script blending Hindi & English)"
+    else:
+        lang_field_hint = "MUST be written in natural, fluent English"
 
     slider_note = ""
     if sliders:
@@ -163,15 +243,18 @@ def _build_batch_gemini_prompt(
             f"Nudge every persona toward these preferences while keeping each persona clearly distinct."
         )
 
-    return f"""You are PrismTone, an expert AI communication transformer.
+    return f"""You are PrismTone, an expert multilingual AI communication transformer.
 Transform the user's raw draft into distinct, high-contrast rewrites for EVERY requested persona below.
 
+MANDATORY OUTPUT LANGUAGE ({language.upper()}):
+{lang_directive}
+
 CRITICAL RULES:
-1. PRESERVE ALL FACTS: Keep every date, day, number, amount, metric, deadline, and core event intact.
-2. PRESERVE PLACEHOLDERS EXACTLY: If the draft contains privacy tokens like [PERSON_1], [EMAIL_1], [PHONE_1], or [IP_1], keep those exact bracketed tokens when referring to them. Executive/Legal may omit a blamed individual; Peer/Gen-Z may mention them constructively.
-3. CHANNEL FORMAT ({channel}): {CHANNEL_GUIDES.get(channel, CHANNEL_GUIDES["email"])}
-4. LENGTH ({length}): {LENGTH_GUIDES.get(length, LENGTH_GUIDES["standard"])}
-5. LANGUAGE ({language}): {LANGUAGE_GUIDES.get(language, LANGUAGE_GUIDES["en"])}{slider_note}
+1. LANGUAGE COMPLIANCE IS NON-NEGOTIABLE: Every persona's "subject" and "rewrite" {lang_field_hint}. Keep "change_notes" and "risk_flags" in concise English for audit clarity.
+2. PRESERVE ALL FACTS: Keep every date, day, number, amount, metric, deadline, and core event intact (translated naturally into the target language where appropriate, e.g., Friday -> शुक्रवार in Hindi or Friday in Hinglish).
+3. PRESERVE PRIVACY PLACEHOLDERS EXACTLY: If the draft contains privacy tokens like [PERSON_1], [EMAIL_1], [PHONE_1], or [IP_1], keep those exact ASCII bracketed tokens verbatim when referring to them. Executive/Legal may omit a blamed individual; Peer/Gen-Z may mention them constructively.
+4. CHANNEL FORMAT ({channel}): {CHANNEL_GUIDES.get(channel, CHANNEL_GUIDES["email"])}
+5. LENGTH ({length}): {LENGTH_GUIDES.get(length, LENGTH_GUIDES["standard"])}{slider_note}
 
 TARGET PERSONAS:
 {chr(10).join(persona_specs)}
@@ -183,8 +266,8 @@ Return ONLY valid JSON with this exact top-level structure (one entry per person
 {{
   "personas": {{
     "<persona_id>": {{
-      "subject": "Concise email subject line (empty string if channel is not email)",
-      "rewrite": "The polished rewritten message",
+      "subject": "Concise email subject line ({lang_field_hint}; empty string if channel is not email)",
+      "rewrite": "The polished rewritten message ({lang_field_hint})",
       "tone_scores": {{"formality": 8.5, "warmth": 4.0, "directness": 9.0}},
       "change_notes": ["Specific note on a key tone/structure edit", "Specific note on fact preservation or risk removal"],
       "risk_flags": ["Blame, vague deadline, or risky promise removed or still present (empty list if none)"]
@@ -200,7 +283,7 @@ def generate_simulated_rewrite(
     length: str = "standard",
     language: str = "en",
 ) -> Dict[str, Any]:
-    """Fail-safe offline heuristic rewrite so live stage demos never stall."""
+    """Fail-safe offline heuristic rewrite supporting English, Hinglish, and Hindi."""
     lower_draft = draft.lower()
     is_demo_draft = (
         ("raj" in lower_draft or "[person_1]" in lower_draft)
@@ -210,45 +293,121 @@ def generate_simulated_rewrite(
 
     if is_demo_draft and persona_id in OFFLINE_DEMO_PRESETS:
         preset = OFFLINE_DEMO_PRESETS[persona_id]
-        rewrite = OFFLINE_HINGLISH[persona_id] if language == "hinglish" else preset["rewrite"]
+        if language == "hinglish" and persona_id in OFFLINE_HINGLISH_PRESETS:
+            subject = OFFLINE_HINGLISH_PRESETS[persona_id]["subject"]
+            rewrite = OFFLINE_HINGLISH_PRESETS[persona_id]["rewrite"]
+        elif language == "hi" and persona_id in OFFLINE_HINDI_PRESETS:
+            subject = OFFLINE_HINDI_PRESETS[persona_id]["subject"]
+            rewrite = OFFLINE_HINDI_PRESETS[persona_id]["rewrite"]
+        else:
+            subject = preset["subject"]
+            rewrite = preset["rewrite"]
+
         if "[person_1]" in lower_draft:
             rewrite = rewrite.replace("Raj", "[PERSON_1]")
+        elif language == "hi":
+            rewrite = rewrite.replace("Raj", "राज")
+
         return {
-            "subject": preset["subject"],
+            "subject": subject,
             "rewrite": rewrite,
             "change_notes": list(preset["change_notes"]),
             "risk_flags": list(preset["risk_flags"]),
         }
 
-    core_text = " ".join(s.strip() for s in re.split(r"[.!?\n]+", draft) if s.strip()) or draft
-    templates = {
-        "executive": (
-            "Action Required: Key Status & Target Timeline",
-            f"Key update: {core_text}. Execution is prioritized to hit the target milestone on schedule.",
-            ["Front-loaded outcome and delivery priority for executive clarity", "Condensed informal phrasing into direct action"],
-        ),
-        "peer": (
-            "Quick sync & team update",
-            f"Hey team! Quick heads-up: {core_text}. Let's collaborate closely to get this across the finish line—happy to jump in and help!",
-            ["Added warm, collaborative framing", "Kept core deliverables intact"],
-        ),
-        "legal": (
-            "Formal Record of Status and Commitments",
-            f"Please be advised of the following factual update: {core_text}. Actions are proceeding per standard protocol without extended warranties.",
-            ["Neutralized subjective language for compliance safety", "Preserved stated dates and factual scope"],
-        ),
-        "gen_z": (
-            "Quick vibe check & update!",
-            f"Yo team! Quick update: {core_text}. We're locked in and getting this sorted fast—let's go!",
-            ["Injected high-energy modern cadence", "Preserved original intent and timeline"],
-        ),
-    }
-    subj, rewr, notes = templates.get(
-        persona_id,
-        (f"Update for {persona_name}", f"{core_text}.", [f"Offline mode: kept original wording for {persona_name}"]),
-    )
+    core_text = " ".join(s.strip() for s in re.split(r"[.!?।\n]+", draft) if s.strip()) or draft
+
+    if language == "hinglish":
+        templates = {
+            "executive": (
+                "Action Required: Key Status aur Target Timeline",
+                f"Important update: {core_text}. Target milestone time par achieve karne ke liye execution top priority par hai.",
+                ["Front-loaded outcome and delivery priority in corporate Hinglish", "Condensed informal phrasing into direct action"],
+            ),
+            "peer": (
+                "Quick team sync aur update",
+                f"Hey team! Ek quick heads-up: {core_text}. Chalo milkar isse time par smoothly complete karte hain — kisi bhi help ke liye batana!",
+                ["Added warm, collaborative Hinglish framing", "Kept core deliverables intact"],
+            ),
+            "legal": (
+                "Status aur Commitments ka Formal Record",
+                f"Record ke liye yeh factual update note karein: {core_text}. Standard protocol ke hisaab se action liya ja raha hai bina kisi extra warranty ke.",
+                ["Neutralized subjective language in formal Hinglish", "Preserved stated dates and factual scope"],
+            ),
+            "gen_z": (
+                "Quick vibe check aur update!",
+                f"Yaar team, quick update: {core_text}. Hum full locked in hain aur isse jaldi sort kar lenge — let's go!",
+                ["Injected high-energy desi Gen-Z Hinglish cadence", "Preserved original intent and timeline"],
+            ),
+        }
+        default_tpl = (
+            f"{persona_name} ke liye Update",
+            f"Update: {core_text}. Is par priority se kaam chal raha hai.",
+            [f"Offline Hinglish mode: adapted tone for {persona_name}"],
+        )
+    elif language == "hi":
+        hi_core = _offline_hindi_phrase(core_text)
+        templates = {
+            "executive": (
+                "आवश्यक कार्यवाही: प्रमुख स्थिति एवं समय-सीमा अपडेट",
+                f"प्रमुख अपडेट: {hi_core}। निर्धारित समय-सीमा के भीतर लक्ष्य पूरा करने हेतु कार्य उच्च प्राथमिकता पर जारी है।",
+                ["Front-loaded outcome and delivery priority in formal Hindi", "Condensed informal phrasing into executive Hindi"],
+            ),
+            "peer": (
+                "टीम समन्वय एवं त्वरित अपडेट",
+                f"नमस्ते टीम, एक महत्वपूर्ण जानकारी: {hi_core}। आइए मिलकर इसे समय पर सफलतापूर्वक पूरा करें — किसी भी सहायता के लिए बेझिझक बताएं!",
+                ["Added warm, supportive Hindi framing", "Kept core deliverables intact"],
+            ),
+            "legal": (
+                "स्थिति एवं प्रतिबद्धताओं का औपचारिक विवरण",
+                f"कृपया निम्नलिखित तथ्यात्मक विवरण का संज्ञान लें: {hi_core}। मानक प्रक्रिया के अनुसार कार्यवाही जारी है तथा अतिरिक्त आश्वासन देय नहीं है।",
+                ["Neutralized subjective language into compliance-grade Hindi", "Preserved stated dates and factual scope"],
+            ),
+            "gen_z": (
+                "क्विक अपडेट — पूरी ऊर्जा के साथ काम जारी!",
+                f"अरे टीम, क्विक अपडेट: {hi_core}। हम पूरी तरह फोकस्ड हैं और इसे तेज़ी से सॉर्ट कर लेंगे!",
+                ["Adapted into energetic modern Hindi cadence", "Preserved original intent and timeline"],
+            ),
+        }
+        default_tpl = (
+            f"{persona_name} हेतु अपडेट",
+            f"महत्वपूर्ण विवरण: {hi_core}। इस विषय पर प्राथमिकता से कार्य किया जा रहा है।",
+            [f"Offline Hindi mode: adapted tone for {persona_name}"],
+        )
+    else:
+        templates = {
+            "executive": (
+                "Action Required: Key Status & Target Timeline",
+                f"Key update: {core_text}. Execution is prioritized to hit the target milestone on schedule.",
+                ["Front-loaded outcome and delivery priority for executive clarity", "Condensed informal phrasing into direct action"],
+            ),
+            "peer": (
+                "Quick sync & team update",
+                f"Hey team! Quick heads-up: {core_text}. Let's collaborate closely to get this across the finish line—happy to jump in and help!",
+                ["Added warm, collaborative framing", "Kept core deliverables intact"],
+            ),
+            "legal": (
+                "Formal Record of Status and Commitments",
+                f"Please be advised of the following factual update: {core_text}. Actions are proceeding per standard protocol without extended warranties.",
+                ["Neutralized subjective language for compliance safety", "Preserved stated dates and factual scope"],
+            ),
+            "gen_z": (
+                "Quick vibe check & update!",
+                f"Yo team! Quick update: {core_text}. We're locked in and getting this sorted fast—let's go!",
+                ["Injected high-energy modern cadence", "Preserved original intent and timeline"],
+            ),
+        }
+        default_tpl = (
+            f"Update for {persona_name}",
+            f"{core_text}.",
+            [f"Offline mode: kept original wording for {persona_name}"],
+        )
+
+    subj, rewr, notes = templates.get(persona_id, default_tpl)
     if length == "one_liner":
-        rewr = rewr.split(". ")[0].rstrip(".") + "."
+        delim = "।" if language == "hi" else "."
+        first = re.split(r"[.।]\s*", rewr)[0].rstrip(".।")
+        rewr = f"{first}{delim}"
     return {"subject": subj, "rewrite": rewr, "change_notes": notes, "risk_flags": []}
 
 
