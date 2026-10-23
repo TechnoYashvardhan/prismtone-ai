@@ -4,7 +4,8 @@ import {
   Download, Printer, Plus, Activity, Radar, GitCompareArrows,
   Search, History, AlertTriangle, Send, Copy, Check, FileText,
   Volume2, Eye, LayoutList, CheckCircle2, ChevronRight, ArrowRight,
-  TrendingUp, Terminal, Star, Trash2
+  TrendingUp, Terminal, Star, Trash2, Zap, GraduationCap, Briefcase,
+  Megaphone, UserCheck, Mail, MessageSquare, MessageCircle, Smartphone
 } from 'lucide-react';
 
 import {
@@ -53,6 +54,28 @@ const COLLEGE_TEMPLATES = [
     description: 'Empathetic, accountable, zero excuses, offering immediate remediation and goodwill credit.'
   }
 ];
+
+function getPresetIcon(iconKey) {
+  switch (iconKey) {
+    case 'zap': return <Zap size={13} color="#818cf8" />;
+    case 'graduation-cap': return <GraduationCap size={13} color="#10b981" />;
+    case 'briefcase': return <Briefcase size={13} color="#f59e0b" />;
+    case 'megaphone': return <Megaphone size={13} color="#ec4899" />;
+    case 'user-check': return <UserCheck size={13} color="#06b6d4" />;
+    default: return <Sparkles size={13} color="#818cf8" />;
+  }
+}
+
+function getChannelIcon(channelId) {
+  switch (channelId) {
+    case 'email': return <Mail size={12} />;
+    case 'slack': return <MessageSquare size={12} />;
+    case 'whatsapp': return <MessageCircle size={12} />;
+    case 'linkedin': return <Briefcase size={12} />;
+    case 'sms': return <Smartphone size={12} />;
+    default: return <Mail size={12} />;
+  }
+}
 
 export default function App() {
   const { toasts, notify } = useToasts();
@@ -362,8 +385,8 @@ export default function App() {
             title="Load Official Vibeathon Outage Demo"
             style={{ borderColor: 'rgba(99,102,241,0.5)', background: 'rgba(99,102,241,0.12)', color: '#c7d2fe' }}
           >
-            <Sparkles size={14} color="#818cf8" />
-            <span>⚡ Vibeathon Demo</span>
+            <Zap size={14} color="#818cf8" />
+            <span>Vibeathon Demo</span>
           </button>
 
           {/* Export Report Actions */}
@@ -582,7 +605,10 @@ export default function App() {
                       handleTransform(p.draft);
                     }}
                   >
-                    <span>{p.title}</span>
+                    <span className="row-center">
+                      {getPresetIcon(p.icon)}
+                      <span>{p.title}</span>
+                    </span>
                     <ChevronRight size={13} className="subtle" />
                   </button>
                 ))}
@@ -592,10 +618,12 @@ export default function App() {
             {/* Channel, Length, Language controls */}
             <div className="controls-subgrid">
               <div className="control-item">
-                <span className="subtle" style={{ fontSize: 10, fontWeight: 700 }}>CHANNEL</span>
+                <span className="subtle" style={{ fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {getChannelIcon(channel)} CHANNEL
+                </span>
                 <select className="control-select" value={channel} onChange={(e) => setChannel(e.target.value)}>
                   {CHANNELS.map((c) => (
-                    <option key={c.id} value={c.id}>{c.icon} {c.label}</option>
+                    <option key={c.id} value={c.id}>{c.label}</option>
                   ))}
                 </select>
               </div>
@@ -1194,8 +1222,9 @@ export default function App() {
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700, color: '#818cf8' }}>
-                    🕵️ True Subtext &amp; Unspoken Intent
+                  <span className="row-center" style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700, color: '#818cf8', gap: 6 }}>
+                    <Search size={13} color="#818cf8" />
+                    <span>True Subtext &amp; Unspoken Intent</span>
                   </span>
                   <p style={{ fontSize: 14, fontWeight: 500, background: 'rgba(99,102,241,0.08)', padding: 14, borderRadius: 8, border: '1px solid rgba(99,102,241,0.25)' }}>
                     {decoderResult.subtext}
