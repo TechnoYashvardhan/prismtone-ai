@@ -4,7 +4,24 @@
  */
 
 const REQUEST_TIMEOUT_MS = 30000;
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
+function resolveApiBase() {
+  let base = (import.meta.env.VITE_API_BASE_URL || '').trim();
+
+  // Auto-heal common typo: prismtone-api.onrender.com -> prismtone-ai.onrender.com
+  if (base.includes('prismtone-api.onrender.com')) {
+    base = base.replace('prismtone-api.onrender.com', 'prismtone-ai.onrender.com');
+  }
+
+  // If deployed on Vercel without an env var, default to the production Render backend
+  if (!base && typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+    base = 'https://prismtone-ai.onrender.com';
+  }
+
+  return base.replace(/\/$/, '');
+}
+
+const API_BASE = resolveApiBase();
 
 export class ApiError extends Error {
   constructor(message, { status = 0, offline = false } = {}) {
