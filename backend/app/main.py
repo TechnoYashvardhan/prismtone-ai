@@ -18,7 +18,6 @@ app = FastAPI(
     description="PrismTone: Instant Persona and Communication Transformer API"
 )
 
-# CORS Middleware setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -27,16 +26,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/health")
 def health_check():
-    """Health and status endpoint."""
+    """Health and AI model status endpoint."""
     return {
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "ai_ready": bool(settings.GEMINI_API_KEY or settings.OPENAI_API_KEY),
-        "supported_personas": list(PERSONA_PROFILES.keys())
+        "primary_model": settings.GEMINI_MODEL,
+        "fallback_model": settings.GEMINI_FALLBACK_MODEL,
+        "supported_personas": list(PERSONA_PROFILES.keys()),
     }
+
 
 @app.get(f"{settings.API_PREFIX}/presets")
 def get_demo_presets():
@@ -68,10 +71,12 @@ def get_demo_presets():
         }
     ]
 
+
 @app.get(f"{settings.API_PREFIX}/personas")
 def get_personas():
     """Returns all available persona templates with metadata."""
     return PERSONA_PROFILES
+
 
 @app.post(f"{settings.API_PREFIX}/transform", response_model=TransformResponse)
 async def api_transform_draft(request: TransformRequest):
@@ -80,10 +85,10 @@ async def api_transform_draft(request: TransformRequest):
     with word diff, Fact Guard checklist, risk analysis, and change scoring.
     """
     try:
-        response = await transform_draft(request)
-        return response
+        return await transform_draft(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post(f"{settings.API_PREFIX}/decode", response_model=ToneDecodeResponse)
 async def api_decode_tone(request: ToneDecodeRequest):
@@ -92,9 +97,10 @@ async def api_decode_tone(request: ToneDecodeRequest):
     subtext translation, and offers 3 strategic reply angles.
     """
     try:
-        return decode_incoming_message(request.incoming_text)
+        return await decode_incoming_message(request.incoming_text, api_key=request.api_key)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

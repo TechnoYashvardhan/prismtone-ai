@@ -1,93 +1,184 @@
 """
 PrismTone LLM Engine
-Manages AI persona transformation with dual-mode execution:
-1. Live Cloud LLM (Gemini 1.5/2.0, OpenAI, or Claude if API key configured).
-2. Offline / Low-Latency Simulated Intelligence Engine (for 100% fail-safe live stage demos).
+Powered by Google Gemini (models/gemini-3.6-flash primary + models/gemini-3.5-flash-lite failover)
+with Stage-Safe Offline Heuristic Intelligence if network drops.
 """
-import os
 import re
-import json
 import asyncio
-import httpx
-from typing import Dict, List, Optional
-from app.config import settings
+from typing import Any, Dict, List, Optional, Tuple
 from app.schemas import (
-    TransformRequest, TransformResponse, PersonaOutput, SliderSettings
+    TransformRequest, TransformResponse, PersonaOutput, SliderSettings, ToneMetrics
 )
-from app.services.diff_engine import compute_word_diff
+from app.services.gemini_client import generate_gemini_json
+from app.services.diff_engine import compute_word_diff, calculate_change_score
 from app.services.fact_guard import extract_facts_from_text, verify_facts
-from app.services.tone_analyzer import analyze_full_tone, detect_risk_flags
+from app.services.tone_analyzer import (
+    calculate_reading_grade, detect_risk_flags, estimate_tone_scores
+)
 from app.services.privacy_guard import mask_pii, unmask_pii
 
-# Persona metadata
-PERSONA_PROFILES = {
+PERSONA_PROFILES: Dict[str, Dict[str, str]] = {
     "executive": {
         "name": "Executive C-Level",
         "tagline": "Outcome-first, 2-3 crisp lines, zero fluff, clear deadlines",
-        "style": "Direct, decisive, high-level impact"
+        "guide": (
+            "Write 2 to 3 crisp, high-impact sentences. Lead immediately with status/outcome "
+            "and the clear action/deadline. Eliminate personal blame and filler."
+        ),
     },
     "peer": {
         "name": "Supportive Peer",
         "tagline": "Warm, constructive, collaborative, frames critique as mutual growth",
-        "style": "Empathetic, encouraging, team-first"
+        "guide": (
+            "Write warmly and constructively like a supportive teammate. Frame problems as "
+            "shared team goals, remove harsh blame, and offer collaboration while keeping deadlines clear."
+        ),
     },
     "legal": {
         "name": "Legal & Compliance",
         "tagline": "Neutral, legally sound, factual, zero emotive blame or over-promises",
-        "style": "Precise, objective, liability-safe"
+        "guide": (
+            "Write in neutral, objective, compliance-safe language. Strip all personal blame, "
+            "emotive words, and absolute guarantees. State facts, dates, and obligations accurately."
+        ),
     },
     "gen_z": {
         "name": "Gen-Z Hype",
         "tagline": "Energetic, punchy, modern office slang, high vibe yet work-ready",
-        "style": "Casual, upbeat, modern colloquial"
-    }
+        "guide": (
+            "Write energetic, upbeat, concise modern workplace copy with tasteful Gen-Z expressions "
+            "(e.g. 'locked in', 'no stress', 'we got this') while keeping every fact and deadline intact."
+        ),
+    },
 }
 
-# Offline demo prompt presets (especially the Vibeathon official demo draft)
+CHANNEL_GUIDES = {
+    "email": "Professional email body (include a clear, compelling subject line).",
+    "slack": "Scannable Slack message (concise, natural workplace chat flow).",
+    "whatsapp": "Crisp WhatsApp message (mobile-friendly, direct, light formatting).",
+    "linkedin": "Polished LinkedIn message/post style (professional, engaging).",
+    "sms": "Ultra-short SMS text (under 160 characters if possible, essential facts only).",
+}
+
+LENGTH_GUIDES = {
+    "one_liner": "Strictly 1 single punchy sentence.",
+    "short": "2 concise sentences maximum.",
+    "standard": "2 to 4 well-structured sentences.",
+}
+
+LANGUAGE_GUIDES = {
+    "en": "Write strictly in natural, fluent English.",
+    "hinglish": "Write in natural Indian Hinglish (Roman script blending Hindi & English naturally as used in Indian tech teams).",
+    "hi": "Write in clear, natural Hindi (Devanagari script), keeping technical terms understandable.",
+}
+
 OFFLINE_DEMO_PRESETS = {
     "server went down": {
         "executive": {
             "subject": "Status Update: Production Outage & Friday Recovery Milestone",
-            "rewrite": "The production server experienced downtime. An emergency patch is currently being deployed to restore full redundancy, with the final resolution targeted for completion by Friday EOD.",
+            "rewrite": "The production server experienced downtime. An emergency patch is currently being deployed to restore full redundancy, with final resolution targeted for Friday EOD.",
             "change_notes": [
-                "Moved resolution timeline (Friday) to the forefront for executive visibility",
-                "Replaced individual blame with systemic remediation status",
-                "Adopted high-level impact terminology ('full redundancy')"
+                "Front-loaded outage impact and Friday recovery deadline for executive scanning",
+                "Replaced personal blame with systemic remediation ownership",
             ],
-            "risk_flags": ["Blame language completely eliminated"]
+            "risk_flags": ["Blame language eliminated"],
         },
         "peer": {
-            "subject": "Quick check-in on the server fix for Friday",
-            "rewrite": "Hey team, appreciate everyone rallying around the recent server issue. Raj is taking the lead on troubleshooting the root cause, and we're on track to wrap up fixes together by Friday. Let me know how I can help!",
+            "subject": "Quick sync on the server fix for Friday",
+            "rewrite": "Hey team, appreciate everyone rallying around the server issue. Raj is leading the root-cause fix right now, and we're on track to wrap everything up together by Friday. Let me know how I can help!",
             "change_notes": [
-                "Framed the incident as a collaborative team effort",
-                "Positioned Raj as leading the fix rather than bearing blame",
-                "Added supportive offer of assistance"
+                "Reframed individual blame into supportive ownership for Raj",
+                "Added collaborative offer of help while keeping Friday clear",
             ],
-            "risk_flags": []
+            "risk_flags": [],
         },
         "legal": {
-            "subject": "Notification of Service Interruption and Scheduled Rectification",
-            "rewrite": "We hereby record that a server disruption occurred. A technical review is underway, and corrective measures are scheduled for implementation on or before Friday. No warranties beyond standard SLA are extended.",
+            "subject": "Notice of Service Interruption and Scheduled Rectification",
+            "rewrite": "Please be advised that a server interruption occurred. Technical remediation is underway, with corrective deployment scheduled on or before Friday. No warranties beyond standard SLA are extended.",
             "change_notes": [
-                "Stripped all speculative and personal blame to prevent liability exposure",
-                "Established precise date commitment without emotive qualifiers",
-                "Maintained strict factual record of service disruption"
+                "Removed personal culpability to prevent legal/HR liability",
+                "Stated Friday remediation target neutrally without over-promising",
             ],
-            "risk_flags": ["Removed personal culpability to eliminate legal vulnerability"]
+            "risk_flags": ["Personal blame and unverified liability removed"],
         },
         "gen_z": {
-            "subject": "Server downtime update — we bounce back Friday!",
-            "rewrite": "Server took a quick nap, ngl! But no stress — Raj and the squad are already on the fix and we'll be totally locked in by Friday. We got this!",
+            "subject": "Server update — locking in the fix by Friday!",
+            "rewrite": "Server took an unplanned nap, ngl! Zero stress though — Raj and the squad are already cooking on the patch and we'll be 100% locked in by Friday. We got this!",
             "change_notes": [
-                "Replaced technical downtime with playful colloquialism ('took a quick nap')",
-                "Lightened the mood while keeping the Friday deadline crystal clear",
-                "Turned individual blame into a supportive shoutout"
+                "Shifted tense blame into upbeat squad energy",
+                "Preserved both Raj's involvement and the Friday deadline clearly",
             ],
-            "risk_flags": []
-        }
+            "risk_flags": [],
+        },
     }
 }
+
+
+def _build_batch_gemini_prompt(
+    masked_draft: str,
+    personas: List[str],
+    channel: str,
+    length: str,
+    language: str,
+    sliders: Optional[SliderSettings],
+    custom_persona_prompt: Optional[str],
+) -> str:
+    persona_specs = []
+    for pid in personas:
+        if pid in PERSONA_PROFILES:
+            p = PERSONA_PROFILES[pid]
+            persona_specs.append(f'- "{pid}" ({p["name"]}): {p["guide"]}')
+        else:
+            custom_desc = custom_persona_prompt or f"Adapt specifically for audience '{pid}'."
+            persona_specs.append(f'- "{pid}": {custom_desc}')
+
+    slider_note = ""
+    if sliders:
+        slider_note = (
+            f"\nUser Fine-Tuning Bias (1-10 scale): Formality={sliders.formality}, "
+            f"Warmth={sliders.warmth}, Brevity={sliders.brevity}, "
+            f"Directness={sliders.directness}, Humor={sliders.humor}. "
+            f"Nudge each persona subtly toward these preferences while keeping each persona distinct."
+        )
+
+    return f"""You are PrismTone, an expert AI communication transformer.
+Transform the user's raw draft into distinct, high-contrast rewrites for EVERY requested persona below.
+
+CRITICAL RULES:
+1. PRESERVE ALL FACTS: Keep every date, day, number, amount, metric, deadline, and core event intact.
+2. PRESERVE PLACEHOLDERS EXACTLY: If the draft contains privacy tokens like [PERSON_1], [EMAIL_1], [PHONE_1], or [IP_1], keep those exact bracketed tokens in your rewrites when referring to them (note: Executive/Legal may omit blaming an individual if appropriate, while Peer/Gen-Z can mention them constructively).
+3. CHANNEL FORMAT ({channel}): {CHANNEL_GUIDES.get(channel, CHANNEL_GUIDES["email"])}
+4. LENGTH ({length}): {LENGTH_GUIDES.get(length, LENGTH_GUIDES["standard"])}
+5. LANGUAGE ({language}): {LANGUAGE_GUIDES.get(language, LANGUAGE_GUIDES["en"])}{slider_note}
+
+TARGET PERSONAS:
+{chr(10).join(persona_specs)}
+
+RAW DRAFT:
+\"\"\"{masked_draft}\"\"\"
+
+Return ONLY valid JSON with this exact top-level structure:
+{{
+  "personas": {{
+    "<persona_id>": {{
+      "subject": "Concise email subject line (empty string if channel is not email)",
+      "rewrite": "The polished rewritten message",
+      "tone_scores": {{
+        "formality": 8.5,
+        "warmth": 4.0,
+        "directness": 9.0
+      }},
+      "change_notes": [
+        "Short specific explanation of a key structural or tone edit (Why this changed)",
+        "Second short specific note on fact preservation or risk removal"
+      ],
+      "risk_flags": [
+        "Short note on any blame, vague deadline, or risky promise removed or still present (empty list if none)"
+      ]
+    }}
+  }}
+}}"""
+
 
 def generate_simulated_rewrite(
     draft: str,
@@ -95,237 +186,193 @@ def generate_simulated_rewrite(
     channel: str = "email",
     length: str = "standard",
     language: str = "en",
-    sliders: Optional[SliderSettings] = None
-) -> Dict[str, any]:
-    """
-    Intelligent heuristic fallback that generates high-fidelity persona rewrites
-    even without internet or API keys.
-    """
+) -> Dict[str, Any]:
+    """Fail-safe offline heuristic rewrite so live stage demos never stall."""
     lower_draft = draft.lower()
 
-    # 1. Check match for Vibeathon official demo draft
     if ("raj" in lower_draft or "[person" in lower_draft) and "server" in lower_draft and "friday" in lower_draft:
         preset_bundle = OFFLINE_DEMO_PRESETS["server went down"]
         if persona_id in preset_bundle:
-            data = preset_bundle[persona_id].copy()
-            # If draft had masked person, ensure placeholder is in preset rewrite so unmask_pii restores it
+            data = {
+                "subject": preset_bundle[persona_id]["subject"],
+                "rewrite": preset_bundle[persona_id]["rewrite"],
+                "change_notes": list(preset_bundle[persona_id]["change_notes"]),
+                "risk_flags": list(preset_bundle[persona_id]["risk_flags"]),
+            }
             if "[person_1]" in lower_draft:
                 data["rewrite"] = data["rewrite"].replace("Raj", "[PERSON_1]").replace("raj", "[PERSON_1]")
-            # Channel adaptation
-            if channel == "slack":
-                data["rewrite"] = data["rewrite"].replace("We hereby record that a", "FYI team: A")
-            elif channel == "whatsapp":
-                data["rewrite"] = "📢 " + data["rewrite"]
-            elif channel == "sms":
-                data["rewrite"] = data["rewrite"][:140]
-
-            # Language adaptation
             if language == "hinglish":
-                if persona_id == "executive":
-                    data["rewrite"] = "Production server me downtime aaya tha. Team patch deploy kar rahi hai, and final resolution Friday tak complete ho jayega."
-                elif persona_id == "peer":
-                    data["rewrite"] = "Hey team, server issue par sabka support great tha. Raj fix lead kar raha hai aur hum Friday tak deliver kar denge. Koi help chahiye toh batao!"
-                elif persona_id == "gen_z":
-                    data["rewrite"] = "Server crash ho gaya tha yaar, but full scenes on hai! Raj bhai fix kar rahe hai, Friday tak sorted!"
-            elif language == "hi":
-                if persona_id == "executive":
-                    data["rewrite"] = "सर्वर में आई रुकावट की समीक्षा की जा रही है। शुक्रवार तक समाधान पूरा करने का लक्ष्य निर्धारित किया गया है।"
-                elif persona_id == "peer":
-                    data["rewrite"] = "नमस्ते टीम, सर्वर समस्या को ठीक करने में सभी के सहयोग की सराहना। शुक्रवार तक काम पूरा हो जाएगा।"
+                hinglish_map = {
+                    "executive": "Production server me downtime aaya tha. Emergency patch deploy ho raha hai, aur Friday EOD tak full resolution target hai.",
+                    "peer": "Hey team, server issue par sabka support great hai. [PERSON_1] root-cause fix lead kar rahe hain aur hum Friday tak milkar wrap up kar lenge!",
+                    "legal": "Record ke liye सूचित kiya jata hai ki server disruption hua tha. Technical review chalu hai aur Friday ya usse pehle corrective patch schedule hai.",
+                    "gen_z": "Server ne chhota sa nap le liya tha ngl! No stress — [PERSON_1] aur squad fix par locked in hain, Friday tak full sorted!",
+                }
+                if persona_id in hinglish_map:
+                    txt = hinglish_map[persona_id]
+                    if "[person_1]" not in lower_draft:
+                        txt = txt.replace("[PERSON_1]", "Raj")
+                    data["rewrite"] = txt
             return data
 
-    # 2. General heuristic persona rewriting for arbitrary user drafts
-    sentences = [s.strip() for s in re.split(r'[.!?\n]+', draft) if s.strip()]
-    core_text = " ".join(sentences) if sentences else draft
-
-    if persona_id == "executive":
-        subject = "Action Required: Project Update & Next Milestones"
-        if length == "one_liner":
-            rewrite = f"Status summary: Priority actions are underway, with deliverables scheduled for target completion."
-        else:
-            rewrite = f"Following up on the recent developments regarding: {core_text[:90]}... The key outcome is prioritized, and the team will have all deliverables completed per the milestone schedule."
-        change_notes = [
-            "Front-loaded executive summary and actionable impact",
-            "Condensed conversational tone into focused business objective"
-        ]
-        risk_flags = ["Ensured commitments align with strategic priorities"]
-
-    elif persona_id == "peer":
-        subject = "Quick sync on our progress"
-        if length == "one_liner":
-            rewrite = f"Hey, making great progress on {core_text[:60]}! Let's connect soon."
-        else:
-            rewrite = f"Hey everyone! Really appreciate the hard work everyone has put into this. Regarding our draft points: {core_text[:110]}. Let's collaborate closely to push this across the finish line!"
-        change_notes = [
-            "Introduced warm collaborative greeting and mutual recognition",
-            "Softened authoritative statements into inclusive team discussion"
-        ]
-        risk_flags = []
-
-    elif persona_id == "legal":
-        subject = "Documentation of Formal Communication and Status"
-        rewrite = f"Please be advised regarding the subject matter: {core_text[:100]}. All obligations and commitments remain governed strictly by agreed protocol, without prejudice to existing terms."
-        change_notes = [
-            "Excised non-standard informal verbiage to mitigate liability",
-            "Emphasized documented procedural alignment"
-        ]
-        risk_flags = ["Removed speculative claims to maintain compliance"]
-
-    elif persona_id == "gen_z":
-        subject = "Big update incoming — let's cook!"
-        if length == "one_liner":
-            rewrite = f"Quick vibe check: we're locking in the fix right now, no cap!"
-        else:
-            rewrite = f"Yo team! Quick pulse check on this: {core_text[:80]}. We're absolutely cooking on the resolution, so stay tuned — it's gonna be super clean!"
-        change_notes = [
-            "Injected modern energetic cadence and colloquial punchiness",
-            "Kept output crisp and easily scannable on mobile / chat feeds"
-        ]
-        risk_flags = []
-
-    else:
-        # Custom persona
-        subject = f"Communication Update ({persona_id.replace('_', ' ').title()})"
-        rewrite = f"Tailored delivery: {core_text}"
-        change_notes = ["Adapted tone according to specified custom parameters"]
-        risk_flags = []
-
-    return {
-        "subject": subject,
-        "rewrite": rewrite,
-        "change_notes": change_notes,
-        "risk_flags": risk_flags
+    core_text = " ".join(s.strip() for s in re.split(r"[.!?\n]+", draft) if s.strip()) or draft
+    templates = {
+        "executive": (
+            "Action Required: Key Status & Target Timeline",
+            f"Key update: {core_text}. Remediation and execution are prioritized to hit our target milestone on schedule.",
+            ["Front-loaded outcome and delivery priority for executive clarity", "Condensed informal phrasing into direct action"],
+        ),
+        "peer": (
+            "Quick sync & team update",
+            f"Hey team! Quick heads-up: {core_text}. Let's collaborate closely to get this across the finish line smoothly—happy to jump in and help!",
+            ["Added warm, collaborative framing to support psychological safety", "Kept core deliverables intact"],
+        ),
+        "legal": (
+            "Formal Record of Status and Commitments",
+            f"Please be advised of the following factual update: {core_text}. Actions are proceeding per standard operational protocol without extended warranties.",
+            ["Neutralized subjective language to maintain compliance safety", "Preserved stated dates and factual scope"],
+        ),
+        "gen_z": (
+            "Quick vibe check & update!",
+            f"Yo team! Quick update: {core_text}. We're locked in and getting this sorted fast—let's go!",
+            ["Injected high-energy modern cadence suitable for casual channels", "Preserved original intent and timeline"],
+        ),
     }
-
-async def call_cloud_llm_if_available(
-    draft: str,
-    persona_id: str,
-    channel: str,
-    length: str,
-    language: str,
-    api_key: Optional[str] = None
-) -> Optional[Dict[str, any]]:
-    """
-    Attempts to call Gemini or other AI model if API key exists.
-    Returns parsed structured dict, or None if skipped/failed.
-    """
-    key = api_key or settings.GEMINI_API_KEY
-    if not key:
-        return None
-
-    # Call Gemini Generative Language REST API
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-    system_instruction = (
-        f"You are PrismTone, an expert AI communication and persona transformer. "
-        f"Rewrite the input draft specifically for the persona: {persona_id}. "
-        f"Channel: {channel}, Length: {length}, Language: {language}. "
-        f"You must return strictly valid JSON matching this schema: "
-        f'{{"subject": "string", "rewrite": "string", "change_notes": ["note1", "note2"], "risk_flags": ["flag1"]}}'
+    subj, rewr, notes = templates.get(
+        persona_id,
+        (f"Update ({persona_id.title()})", core_text, ["Adapted tone to custom persona"]),
     )
-    payload = {
-        "contents": [{"parts": [{"text": f"{system_instruction}\n\nDraft:\n{draft}"}]}],
-        "generationConfig": {"responseMimeType": "application/json"}
-    }
+    if length == "one_liner":
+        rewr = rewr.split(".")[0].strip() + "."
+    return {"subject": subj, "rewrite": rewr, "change_notes": notes, "risk_flags": []}
 
+
+def _clamp_score(val: Any, fallback: float) -> float:
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                result_json = resp.json()
-                text_content = result_json["candidates"][0]["content"]["parts"][0]["text"]
-                return json.loads(text_content)
-    except Exception:
-        pass
-    return None
+        return round(max(1.0, min(10.0, float(val))), 1)
+    except (TypeError, ValueError):
+        return fallback
+
 
 async def transform_draft(request: TransformRequest) -> TransformResponse:
     """
-    Full pipeline orchestrator:
-    1. Privacy Masking
-    2. Fact Extraction
-    3. Parallel Persona Generation
-    4. Privacy Unmasking
-    5. Fact Guard Verification
-    6. Word Diff & Tone Metrics Computation
+    Full PrismTone transformation pipeline:
+    1. Privacy Guard PII masking
+    2. Original fact & baseline tone extraction
+    3. Contrastive Gemini 3.6 Flash batch generation (with automatic model + offline failover)
+    4. PII restoration, Fact Guard verification, Word Diff & Change Score calculation
     """
-    start_time = asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
 
-    # 1. Privacy Masking
+    # 1. Privacy Guard Masking
     masked_text = request.draft
-    pii_map = {}
+    pii_map: Dict[str, str] = {}
     if request.privacy_mode:
         masked_text, pii_map = mask_pii(request.draft)
 
-    # 2. Fact Extraction on raw original text
+    # 2. Baseline facts & metrics on raw original draft
     original_facts = extract_facts_from_text(request.draft)
-
-    # Compute baseline metrics of original
-    from app.services.tone_analyzer import estimate_tone_scores, calculate_reading_grade
     orig_scores = estimate_tone_scores(request.draft)
-    orig_grade, orig_grade_label = calculate_reading_grade(request.draft)
+    orig_grade, _ = calculate_reading_grade(request.draft)
     original_metrics = {
         "formality": orig_scores["formality"],
         "warmth": orig_scores["warmth"],
         "directness": orig_scores["directness"],
         "reading_grade": orig_grade,
-        "word_count": float(len(request.draft.split()))
+        "word_count": float(len(request.draft.split())),
     }
 
-    # 3. Parallel Persona Generation
-    async def process_single_persona(pid: str) -> PersonaOutput:
-        profile = PERSONA_PROFILES.get(pid, {
-            "name": pid.replace("_", " ").title(),
-            "tagline": "Custom persona adaptation",
-            "style": "User configured"
-        })
+    # 3. Single-shot Contrastive Gemini Call (1 request for all personas = 4x higher RPM quota!)
+    prompt = _build_batch_gemini_prompt(
+        masked_draft=masked_text,
+        personas=request.personas,
+        channel=request.channel,
+        length=request.length,
+        language=request.language,
+        sliders=request.sliders,
+        custom_persona_prompt=request.custom_persona_prompt,
+    )
+    gemini_payload, model_used = await generate_gemini_json(prompt, api_key=request.api_key)
+    gemini_personas = (gemini_payload or {}).get("personas", {}) if isinstance(gemini_payload, dict) else {}
 
-        # Try cloud LLM first, fallback instantly to simulated logic
-        gen_data = await call_cloud_llm_if_available(
-            masked_text, pid, request.channel, request.length, request.language, request.api_key
+    ai_engine = "gemini" if (model_used and gemini_personas) else "offline_fallback"
+    active_model_label = model_used if (model_used and gemini_personas) else "heuristic-v1"
+
+    # 4. Assemble verified PersonaOutput cards
+    results_dict: Dict[str, PersonaOutput] = {}
+    orig_word_count = max(1, len(request.draft.split()))
+
+    for pid in request.personas:
+        profile = PERSONA_PROFILES.get(
+            pid,
+            {"name": pid.replace("_", " ").title(), "tagline": "Custom audience persona"},
         )
-        if not gen_data:
-            gen_data = generate_simulated_rewrite(
-                masked_text, pid, request.channel, request.length, request.language, request.sliders
+        raw_card = gemini_personas.get(pid) if isinstance(gemini_personas, dict) else None
+        if not isinstance(raw_card, dict) or not raw_card.get("rewrite"):
+            raw_card = generate_simulated_rewrite(
+                masked_text, pid, request.channel, request.length, request.language
             )
 
-        # 4. Privacy Unmasking
-        unmasked_rewrite = unmask_pii(gen_data.get("rewrite", ""), pii_map)
-        unmasked_subject = unmask_pii(gen_data.get("subject", ""), pii_map)
+        unmasked_rewrite = unmask_pii(str(raw_card.get("rewrite", "")).strip(), pii_map)
+        unmasked_subject = unmask_pii(str(raw_card.get("subject", "")).strip(), pii_map)
 
-        # 5. Fact Guard verification
-        verified_facts, guard_status = verify_facts(original_facts, unmasked_rewrite)
+        # Fact Guard check
+        verified_facts, guard_status = verify_facts(
+            original_facts, unmasked_rewrite, original_draft=request.draft, persona_id=pid
+        )
 
-        # 6. Word diff calculation
+        # Word-level diff
         diff_tokens = compute_word_diff(request.draft, unmasked_rewrite)
 
-        # 7. Tone analysis & metrics
-        metrics = analyze_full_tone(request.draft, unmasked_rewrite, pid)
+        # Blend LLM tone scores (if provided) with deterministic readability & change score
+        heuristic_scores = estimate_tone_scores(unmasked_rewrite, pid)
+        llm_scores = raw_card.get("tone_scores") if isinstance(raw_card.get("tone_scores"), dict) else {}
+        formality = _clamp_score(llm_scores.get("formality"), heuristic_scores["formality"])
+        warmth = _clamp_score(llm_scores.get("warmth"), heuristic_scores["warmth"])
+        directness = _clamp_score(llm_scores.get("directness"), heuristic_scores["directness"])
 
-        # 8. Risk flags
+        grade, grade_label = calculate_reading_grade(unmasked_rewrite)
+        rewr_words = len(unmasked_rewrite.split())
+        length_change_pct = round(((rewr_words - orig_word_count) / orig_word_count) * 100.0, 1)
+        tone_delta = abs(formality - orig_scores["formality"]) + abs(warmth - orig_scores["warmth"])
+        change_score = calculate_change_score(request.draft, unmasked_rewrite, tone_delta)
+
+        metrics = ToneMetrics(
+            formality=formality,
+            warmth=warmth,
+            directness=directness,
+            reading_grade=grade,
+            reading_level_label=grade_label,
+            length_change_pct=length_change_pct,
+            change_score=change_score,
+            word_count=rewr_words,
+        )
+
+        # Risk flags (combine LLM observations + regex risk scanner on rewrite)
+        llm_flags = [str(f) for f in (raw_card.get("risk_flags") or []) if str(f).strip()]
         detected_risks = detect_risk_flags(unmasked_rewrite)
-        combined_risks = list(set(gen_data.get("risk_flags", []) + detected_risks))
+        combined_risks = list(dict.fromkeys(llm_flags + detected_risks))[:3]
 
-        return PersonaOutput(
+        notes = [str(n) for n in (raw_card.get("change_notes") or []) if str(n).strip()]
+        if not notes:
+            notes = ["Adapted tone, structure, and vocabulary for target persona"]
+
+        results_dict[pid] = PersonaOutput(
             persona_id=pid,
             persona_name=profile["name"],
             tagline=profile["tagline"],
             rewrite=unmasked_rewrite,
-            subject_line=unmasked_subject if request.channel == "email" else None,
+            subject_line=unmasked_subject if (request.channel == "email" and unmasked_subject) else None,
             metrics=metrics,
             facts_found=verified_facts,
             fact_guard_status=guard_status,
             risk_flags=combined_risks,
-            change_notes=gen_data.get("change_notes", ["Restructured tone for audience expectations"]),
-            diff_tokens=diff_tokens
+            change_notes=notes[:4],
+            diff_tokens=diff_tokens,
         )
 
-    # Run all persona rewrites concurrently
-    persona_tasks = [process_single_persona(pid) for pid in request.personas]
-    results_list = await asyncio.gather(*persona_tasks)
-
-    results_dict = {p.persona_id: p for p in results_list}
-
-    elapsed_ms = round((asyncio.get_event_loop().time() - start_time) * 1000.0, 2)
+    elapsed_ms = round((loop.time() - start_time) * 1000.0, 1)
 
     return TransformResponse(
         original_text=request.draft,
@@ -333,5 +380,7 @@ async def transform_draft(request: TransformRequest) -> TransformResponse:
         results=results_dict,
         processing_time_ms=elapsed_ms,
         privacy_masked=request.privacy_mode and len(pii_map) > 0,
-        masked_entities_count=len(pii_map)
+        masked_entities_count=len(pii_map),
+        ai_engine=ai_engine,
+        model_used=active_model_label,
     )

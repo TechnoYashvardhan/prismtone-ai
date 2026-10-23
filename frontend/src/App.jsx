@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import {
   Sparkles, Copy, Check, RotateCcw, ShieldCheck, AlertTriangle,
-  Volume2, Sliders, Eye, FileText, Send, Zap, Lock, RefreshCw,
-  MessageSquare, Compass, CheckCircle2, ChevronRight, Info, Search
+  Volume2, Sliders, Eye, FileText, Zap, Lock, RefreshCw,
+  Compass, Search, Cpu
 } from 'lucide-react';
 
 const PRESETS = [
@@ -40,14 +40,20 @@ const CHANNELS = [
   { id: 'sms', label: 'SMS', icon: '📲' }
 ];
 
+const LENGTHS = [
+  { id: 'one_liner', label: 'One-Liner' },
+  { id: 'short', label: 'Short' },
+  { id: 'standard', label: 'Standard' }
+];
+
 const LANGUAGES = [
   { id: 'en', label: 'English', flag: '🇬🇧' },
-  { id: 'hinglish', label: 'Hinglish (Local)', flag: '🇮🇳' },
+  { id: 'hinglish', label: 'Hinglish', flag: '🇮🇳' },
   { id: 'hi', label: 'Hindi', flag: '🇮🇳' }
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('generator'); // 'generator' | 'decoder'
+  const [activeTab, setActiveTab] = useState('generator');
   const [draft, setDraft] = useState("Server went down, it's Raj's fault, fix by Friday.");
   const [channel, setChannel] = useState('email');
   const [length, setLength] = useState('standard');
@@ -57,8 +63,10 @@ export default function App() {
   const [sliders, setSliders] = useState({ formality: 6, warmth: 5, brevity: 7, directness: 8, humor: 2 });
 
   const [loading, setLoading] = useState(false);
+  const [regeneratingId, setRegeneratingId] = useState(null);
   const [results, setResults] = useState(null);
-  const [viewModes, setViewModes] = useState({}); // { [id]: 'clean' | 'diff' }
+  const [viewModes, setViewModes] = useState({});
+  const [expandedFacts, setExpandedFacts] = useState({});
   const [copiedId, setCopiedId] = useState(null);
   const [speakingId, setSpeakingId] = useState(null);
 
@@ -67,9 +75,9 @@ export default function App() {
   const [decoderResult, setDecoderResult] = useState(null);
   const [decoderLoading, setDecoderLoading] = useState(false);
 
-  // Auto-run first sample on load
   useEffect(() => {
     handleTransform();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleTransform(customDraft = null) {
@@ -96,7 +104,6 @@ export default function App() {
         const data = await resp.json();
         setResults(data);
       } else {
-        // Fallback simulated data if backend proxy has hiccup
         generateLocalFallback(textToTransform);
       }
     } catch (err) {
@@ -107,10 +114,51 @@ export default function App() {
     }
   }
 
+  async function handleRegenerateSingle(personaId) {
+    if (!draft.trim()) return;
+    setRegeneratingId(personaId);
+    try {
+      const resp = await fetch('/api/v1/transform', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          draft,
+          personas: [personaId],
+          channel,
+          length,
+          language,
+          privacy_mode: privacyMode,
+          sliders
+        })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.results && data.results[personaId]) {
+          setResults(prev => prev ? {
+            ...prev,
+            ai_engine: data.ai_engine,
+            model_used: data.model_used,
+            processing_time_ms: data.processing_time_ms,
+            results: {
+              ...prev.results,
+              [personaId]: data.results[personaId]
+            }
+          } : data);
+        }
+      }
+    } catch (err) {
+      console.warn("Single regenerate failed", err);
+    } finally {
+      setRegeneratingId(null);
+    }
+  }
+
   function generateLocalFallback(text) {
     setResults({
       original_text: text,
       processing_time_ms: 12.4,
+      ai_engine: 'offline_fallback',
+      model_used: 'heuristic-v1',
       privacy_masked: privacyMode && /Raj|Priya|Amit/i.test(text),
       masked_entities_count: 1,
       results: {
@@ -131,15 +179,14 @@ export default function App() {
             length_change_pct: 188.0
           },
           facts_found: [
-            { text: 'Friday', category: 'date', status: 'preserved', explanation: 'Preserved accurately' },
-            { text: 'server went down', category: 'commitment', status: 'preserved', explanation: 'Paraphrased as production server downtime' }
+            { text: 'Friday', category: 'date', status: 'preserved' },
+            { text: 'server down', category: 'commitment', status: 'preserved' }
           ],
           fact_guard_status: 'green',
           risk_flags: ['Blame language completely eliminated'],
           change_notes: [
             'Moved resolution timeline (Friday) to the forefront for executive visibility',
-            'Replaced individual blame with systemic remediation status',
-            'Adopted high-level impact terminology'
+            'Replaced individual blame with systemic remediation status'
           ],
           diff_tokens: [
             { type: 'deleted', text: 'Server went down,' },
@@ -174,8 +221,7 @@ export default function App() {
           risk_flags: [],
           change_notes: [
             'Framed the incident as a collaborative team effort',
-            'Positioned Raj as leading the fix rather than bearing blame',
-            'Added supportive offer of assistance'
+            'Positioned Raj as leading the fix rather than bearing blame'
           ],
           diff_tokens: [
             { type: 'added', text: 'Hey team, appreciate everyone rallying around the recent ' },
@@ -204,15 +250,13 @@ export default function App() {
             length_change_pct: 222.0
           },
           facts_found: [
-            { text: 'Friday', category: 'date', status: 'preserved' },
-            { text: 'outage', category: 'commitment', status: 'preserved' }
+            { text: 'Friday', category: 'date', status: 'preserved' }
           ],
           fact_guard_status: 'green',
           risk_flags: ['Removed personal culpability to eliminate legal vulnerability'],
           change_notes: [
             'Stripped all speculative and personal blame to prevent liability exposure',
-            'Established precise date commitment without emotive qualifiers',
-            'Maintained strict factual record of service disruption'
+            'Established precise date commitment without emotive qualifiers'
           ],
           diff_tokens: [
             { type: 'added', text: 'We hereby record that a ' },
@@ -246,7 +290,6 @@ export default function App() {
           risk_flags: [],
           change_notes: [
             "Replaced technical downtime with playful colloquialism ('took a quick nap')",
-            'Lightened the mood while keeping the Friday deadline crystal clear',
             'Turned individual blame into a supportive shoutout'
           ],
           diff_tokens: [
@@ -290,6 +333,8 @@ export default function App() {
       urgency_level: "Critical",
       hidden_subtext: "Frustration: The sender feels you ignored earlier instructions. High-priority time deadline detected.",
       sentiment: "Passive-Aggressive",
+      ai_engine: "offline_fallback",
+      model_used: "heuristic-v1",
       key_signals: [
         'Used "Per my last email" indicating repeated request',
         'Escalation threat ("escalate to VP") indicating loss of patience'
@@ -334,9 +379,13 @@ export default function App() {
     }
   }
 
+  const activeModelDisplay = results?.ai_engine === 'gemini'
+    ? (results.model_used || 'gemini-3.6-flash').replace('models/', '')
+    : null;
+
   return (
     <div style={{ maxWidth: '1440px', margin: '0 auto', padding: '24px 20px' }}>
-      
+
       {/* 1. Header Navigation */}
       <header style={{
         display: 'flex',
@@ -362,7 +411,7 @@ export default function App() {
             <Sparkles size={24} color="#ffffff" />
           </div>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <h1 style={{ fontSize: '24px', fontWeight: '800', letterSpacing: '-0.5px' }}>PrismTone</h1>
               <span style={{
                 fontSize: '11px',
@@ -374,6 +423,25 @@ export default function App() {
                 borderRadius: '999px',
                 border: '1px solid rgba(99, 102, 241, 0.3)'
               }}>Vibeathon 2026</span>
+              {results && (
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  padding: '2px 10px',
+                  borderRadius: '999px',
+                  background: activeModelDisplay ? 'rgba(16, 185, 129, 0.16)' : 'rgba(245, 158, 11, 0.16)',
+                  color: activeModelDisplay ? '#6ee7b7' : '#fbbf24',
+                  border: `1px solid ${activeModelDisplay ? 'rgba(16, 185, 129, 0.4)' : 'rgba(245, 158, 11, 0.4)'}`
+                }}>
+                  <Cpu size={12} />
+                  {activeModelDisplay
+                    ? `Live AI: ${activeModelDisplay} • ${(results.processing_time_ms / 1000).toFixed(2)}s`
+                    : 'Stage-Safe Offline Mode'}
+                </span>
+              )}
             </div>
             <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
               Write once. Sound right to everyone. Instant Persona &amp; Proof Transformer.
@@ -483,7 +551,10 @@ export default function App() {
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Enter your rough draft, bullet points, or rushed thoughts..."
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') handleTransform();
+              }}
+              placeholder="Enter your rough draft, bullet points, or rushed thoughts... (Ctrl+Enter to transform)"
               rows={3}
               style={{
                 width: '100%',
@@ -499,8 +570,8 @@ export default function App() {
                 outline: 'none',
                 transition: 'border 0.2s'
               }}
-              onFocus={(e) => e.target.style.borderColor = '#6366f1'}
-              onBlur={(e) => e.target.style.borderColor = 'var(--border-subtle)'}
+              onFocus={(e) => { e.target.style.borderColor = '#6366f1'; }}
+              onBlur={(e) => { e.target.style.borderColor = 'var(--border-subtle)'; }}
             />
 
             {/* Controls Bar */}
@@ -514,9 +585,9 @@ export default function App() {
               paddingTop: '16px',
               borderTop: '1px solid var(--border-subtle)'
             }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
                 {/* Channel Selector */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
                   {CHANNELS.map(ch => (
                     <button
                       key={ch.id}
@@ -538,8 +609,30 @@ export default function App() {
                   ))}
                 </div>
 
+                {/* Length Control */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                  {LENGTHS.map(len => (
+                    <button
+                      key={len.id}
+                      onClick={() => setLength(len.id)}
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        background: length === len.id ? '#1e293b' : 'transparent',
+                        color: length === len.id ? '#ffffff' : 'var(--text-subtle)'
+                      }}
+                    >
+                      {len.label}
+                    </button>
+                  ))}
+                </div>
+
                 {/* Language Selector */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: 'var(--bg-primary)', padding: '4px 6px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
                   {LANGUAGES.map(lang => (
                     <button
                       key={lang.id}
@@ -578,7 +671,7 @@ export default function App() {
                   }}
                 >
                   <Lock size={14} />
-                  Privacy Guard {privacyMode ? 'ON' : 'OFF'}
+                  Privacy {privacyMode ? 'ON' : 'OFF'}
                 </button>
 
                 {/* Sliders Drawer Toggle */}
@@ -624,7 +717,7 @@ export default function App() {
                 }}
               >
                 {loading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                {loading ? 'Refracting Voice...' : 'Transform Across Personas'}
+                {loading ? 'Refracting via Gemini...' : 'Transform Across Personas'}
               </button>
             </div>
 
@@ -657,7 +750,7 @@ export default function App() {
                       min="1"
                       max="10"
                       value={sliders[s.key]}
-                      onChange={(e) => setSliders({ ...sliders, [s.key]: parseInt(e.target.value) })}
+                      onChange={(e) => setSliders({ ...sliders, [s.key]: parseInt(e.target.value, 10) })}
                       style={{ width: '100%', accentColor: '#6366f1' }}
                     />
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-subtle)' }}>
@@ -686,7 +779,7 @@ export default function App() {
             }}>
               <ShieldCheck size={18} />
               <span>
-                <strong>Privacy Guard Protected:</strong> Sensitive tokens (names/emails) were masked during AI generation and restored faithfully in final cards. No private records stored.
+                <strong>Privacy Guard Protected ({results.masked_entities_count} PII masked):</strong> Sensitive names/emails/phones were masked before reaching Gemini AI and restored faithfully in final cards.
               </span>
             </div>
           )}
@@ -699,6 +792,8 @@ export default function App() {
           }}>
             {results && Object.values(results.results).map((item) => {
               const isDiff = viewModes[item.persona_id] === 'diff';
+              const isFactOpen = !!expandedFacts[item.persona_id];
+              const isRegen = regeneratingId === item.persona_id;
               const pColor = item.persona_id === 'executive' ? 'var(--color-executive)' :
                              item.persona_id === 'peer' ? 'var(--color-peer)' :
                              item.persona_id === 'legal' ? 'var(--color-legal)' : 'var(--color-genz)';
@@ -708,19 +803,21 @@ export default function App() {
                   key={item.persona_id}
                   style={{
                     background: 'var(--bg-surface)',
-                    border: `1px solid var(--border-subtle)`,
+                    border: '1px solid var(--border-subtle)',
                     borderTop: `4px solid ${pColor}`,
                     borderRadius: '14px',
                     padding: '18px',
                     display: 'flex',
                     flexDirection: 'column',
                     justifyContent: 'space-between',
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.2)'
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+                    opacity: isRegen ? 0.65 : 1,
+                    transition: 'opacity 0.2s'
                   }}
                 >
                   <div>
                     {/* Persona Card Header */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px', gap: '8px' }}>
                       <div>
                         <h2 style={{ fontSize: '17px', fontWeight: '800', color: '#ffffff' }}>{item.persona_name}</h2>
                         <p style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.4', marginTop: '2px' }}>
@@ -728,9 +825,10 @@ export default function App() {
                         </p>
                       </div>
 
-                      {/* Fact Guard Badge */}
-                      <span
-                        title="Fact Guard: Verifies survival of numbers, dates & commitments"
+                      {/* Fact Guard Badge (Click to expand checklist) */}
+                      <button
+                        onClick={() => setExpandedFacts({ ...expandedFacts, [item.persona_id]: !isFactOpen })}
+                        title="Click to inspect Fact Guard checklist"
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -739,15 +837,43 @@ export default function App() {
                           fontWeight: '700',
                           padding: '3px 8px',
                           borderRadius: '999px',
-                          background: item.fact_guard_status === 'green' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(245, 158, 11, 0.2)',
-                          color: item.fact_guard_status === 'green' ? '#34d399' : '#fbbf24',
-                          border: `1px solid ${item.fact_guard_status === 'green' ? '#10b981' : '#f59e0b'}`
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                          background: item.fact_guard_status === 'green' ? 'rgba(16, 185, 129, 0.2)' :
+                                      item.fact_guard_status === 'amber' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                          color: item.fact_guard_status === 'green' ? '#34d399' :
+                                 item.fact_guard_status === 'amber' ? '#fbbf24' : '#f87171',
+                          border: `1px solid ${item.fact_guard_status === 'green' ? '#10b981' :
+                                               item.fact_guard_status === 'amber' ? '#f59e0b' : '#ef4444'}`
                         }}
                       >
                         <ShieldCheck size={12} />
-                        {item.fact_guard_status === 'green' ? 'Facts Preserved' : 'Fact Paraphrased'}
-                      </span>
+                        {item.fact_guard_status === 'green' ? 'Facts Preserved' :
+                         item.fact_guard_status === 'amber' ? 'Fact Paraphrased' : 'Fact Alert'}
+                      </button>
                     </div>
+
+                    {/* Expandable Fact Guard Checklist */}
+                    {isFactOpen && item.facts_found && item.facts_found.length > 0 && (
+                      <div style={{
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px',
+                        padding: '8px 10px',
+                        marginBottom: '10px',
+                        fontSize: '11px'
+                      }}>
+                        <div style={{ fontWeight: '700', color: 'var(--text-muted)', marginBottom: '4px' }}>Fact Guard Audit:</div>
+                        {item.facts_found.map((f, idx) => (
+                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
+                            <span><code>{f.text}</code> <span style={{ color: 'var(--text-subtle)' }}>({f.category})</span></span>
+                            <span style={{ color: f.status === 'missing' ? '#f87171' : '#34d399', fontWeight: 700 }}>
+                              {f.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {/* Subject Line (if email) */}
                     {item.subject_line && (
@@ -841,7 +967,7 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Risk Flags (e.g. Blame Removed) */}
+                    {/* Risk Flags */}
                     {item.risk_flags && item.risk_flags.length > 0 && (
                       <div style={{
                         padding: '6px 10px',
@@ -856,7 +982,7 @@ export default function App() {
                         gap: '6px'
                       }}>
                         <AlertTriangle size={14} />
-                        <span><strong>Risk Sanitized:</strong> {item.risk_flags.join(', ')}</span>
+                        <span><strong>Risk Note:</strong> {item.risk_flags.join(', ')}</span>
                       </div>
                     )}
 
@@ -889,8 +1015,9 @@ export default function App() {
                           <strong>{item.metrics.directness}/10</strong>
                         </div>
                       </div>
-                      <div style={{ marginTop: '8px', color: 'var(--text-subtle)', textAlign: 'right' }}>
-                        Reading Level: {item.metrics.reading_level_label}
+                      <div style={{ marginTop: '8px', color: 'var(--text-subtle)', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>{item.metrics.word_count} words ({item.metrics.length_change_pct >= 0 ? '+' : ''}{item.metrics.length_change_pct}%)</span>
+                        <span>{item.metrics.reading_level_label}</span>
                       </div>
                     </div>
                   </div>
@@ -902,26 +1029,48 @@ export default function App() {
                     justifyContent: 'space-between',
                     paddingTop: '12px',
                     borderTop: '1px solid var(--border-subtle)',
-                    gap: '8px'
+                    gap: '6px'
                   }}>
-                    <button
-                      onClick={() => speakText(item.rewrite, item.persona_id)}
-                      title="Read aloud polished draft"
-                      style={{
-                        padding: '6px 10px',
-                        background: speakingId === item.persona_id ? '#4f46e5' : 'var(--bg-primary)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: '6px',
-                        color: 'var(--text-muted)',
-                        fontSize: '12px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      <Volume2 size={14} /> Listen
-                    </button>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        onClick={() => speakText(item.rewrite, item.persona_id)}
+                        title="Read aloud polished draft"
+                        style={{
+                          padding: '6px 10px',
+                          background: speakingId === item.persona_id ? '#4f46e5' : 'var(--bg-primary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: '6px',
+                          color: 'var(--text-muted)',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <Volume2 size={14} /> Listen
+                      </button>
+
+                      <button
+                        onClick={() => handleRegenerateSingle(item.persona_id)}
+                        disabled={isRegen}
+                        title="Regenerate this persona card with Gemini"
+                        style={{
+                          padding: '6px 10px',
+                          background: 'var(--bg-primary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: '6px',
+                          color: 'var(--text-muted)',
+                          fontSize: '12px',
+                          cursor: isRegen ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <RotateCcw size={13} className={isRegen ? 'animate-spin' : ''} /> Retry
+                      </button>
+                    </div>
 
                     <button
                       onClick={() => copyToClipboard(item.rewrite, item.persona_id)}
@@ -964,7 +1113,7 @@ export default function App() {
               <Compass size={20} color="#818cf8" /> Tone Decoder (Reverse Mode)
             </h2>
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-              Paste an incoming email or message that feels passive-aggressive, high-pressure, or ambiguous. PrismTone will decode the subtext and generate 3 tactical reply personas.
+              Paste an incoming email or message that feels passive-aggressive, high-pressure, or ambiguous. Gemini 3.6 Flash will decode the subtext and generate 3 tactical reply angles.
             </p>
 
             <textarea
@@ -1002,7 +1151,7 @@ export default function App() {
               }}
             >
               {decoderLoading ? <RefreshCw size={16} className="animate-spin" /> : <Search size={16} />}
-              Decode Subtext &amp; Recommended Replies
+              {decoderLoading ? 'Decoding via Gemini...' : 'Decode Subtext & Recommended Replies'}
             </button>
           </div>
 
@@ -1036,7 +1185,7 @@ export default function App() {
                 border: '1px solid rgba(99, 102, 241, 0.3)',
                 padding: '16px',
                 borderRadius: '10px',
-                marginBottom: '24px'
+                marginBottom: '20px'
               }}>
                 <h3 style={{ fontSize: '14px', fontWeight: '800', color: '#818cf8', marginBottom: '6px' }}>
                   💡 Hidden Subtext Translation ("What they really mean"):
@@ -1044,6 +1193,13 @@ export default function App() {
                 <p style={{ fontSize: '14px', color: '#e2e8f0', lineHeight: '1.6' }}>
                   {decoderResult.hidden_subtext}
                 </p>
+                {decoderResult.key_signals && decoderResult.key_signals.length > 0 && (
+                  <ul style={{ marginTop: '10px', paddingLeft: '18px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                    {decoderResult.key_signals.map((sig, idx) => (
+                      <li key={idx}>{sig}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               {/* Recommended Reply Cards */}
@@ -1100,12 +1256,14 @@ export default function App() {
         paddingTop: '20px',
         borderTop: '1px solid var(--border-subtle)',
         display: 'flex',
+        flexWrap: 'wrap',
         justifyContent: 'space-between',
+        gap: '10px',
         fontSize: '12px',
         color: 'var(--text-subtle)'
       }}>
         <span>PrismTone Engine • Graphic Era Hill University (Vibeathon 2026)</span>
-        <span>Python FastAPI Backend • React Vite Frontend • Zero Leak Privacy</span>
+        <span>Python FastAPI + Gemini 3.6 Flash • React Vite • Zero-Leak Privacy Guard</span>
       </footer>
 
     </div>

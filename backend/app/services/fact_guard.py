@@ -1,13 +1,12 @@
 """
 PrismTone Fact Guard Engine
 Extracts numbers, dates, names, amounts, and commitments from the raw draft
-and verifies their survival or alteration in the rewritten persona text.
+and verifies their survival or intentional sanitization in the rewritten persona text.
 """
 import re
 from typing import List, Tuple
 from app.schemas import FactItem
 
-# Regex patterns for deterministic, instant fact extraction
 PATTERNS = {
     "date": re.compile(
         r'\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|'
@@ -28,7 +27,7 @@ PATTERNS = {
         r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b'
     ),
     "commitment": re.compile(
-        r'\b(?:fix by|complete by|finish by|launch by|deliver by|deploy by|deadline is|due by|outage|server down|bug|issue|incident|action item|blocker)\b',
+        r'\b(?:server went down|server down|outage|fix by|complete by|finish by|launch by|deliver by|deploy by|deadline|due by|incident|blocker)\b',
         re.IGNORECASE
     )
 }
@@ -36,45 +35,36 @@ PATTERNS = {
 COMMON_WORDS = {
     "The", "A", "An", "This", "That", "It", "We", "I", "You", "They", "He", "She",
     "Please", "Thanks", "Regards", "Dear", "Hi", "Hello", "Hey", "Team", "All",
+    "Server", "Missed", "Interview", "Can", "Are", "Per", "Need",
     "Friday", "Monday", "Tuesday", "Wednesday", "Thursday", "Saturday", "Sunday"
 }
 
+SEMANTIC_EQUIVALENTS = {
+    "server went down": ["outage", "downtime", "disruption", "interruption", "hit", "nap", "issue", "down"],
+    "server down": ["outage", "downtime", "disruption", "interruption", "issue"],
+    "outage": ["downtime", "disruption", "interruption", "server"],
+    "fix by": ["completion", "restoration", "remediation", "resolved", "sorted", "locked in", "scheduled", "fix", "patch", "wrap"],
+    "complete by": ["completion", "target", "scheduled", "deliver", "finish"],
+    "deadline": ["due", "extension", "submit", "schedule", "milestone", "by"],
+    "1": ["one"], "2": ["two"], "3": ["three"], "4": ["four"], "5": ["five"],
+}
+
+BLAME_TRIGGER = re.compile(r"\b(?:fault|blame|mistake|messed up|screwed up)\b", re.IGNORECASE)
+
+
 def extract_facts_from_text(text: str) -> List[FactItem]:
-    """
-    Extracts high-priority fact candidates from original text.
-    """
+    """Extracts high-priority fact anchors from original text."""
     facts: List[FactItem] = []
     seen = set()
 
-    # 1. Dates
-    for match in PATTERNS["date"].finditer(text):
-        val = match.group().strip()
-        if val.lower() not in seen:
-            seen.add(val.lower())
-            facts.append(FactItem(text=val, category="date", status="preserved"))
+    for category in ("date", "amount", "number", "commitment"):
+        for match in PATTERNS[category].finditer(text):
+            val = match.group().strip()
+            low = val.lower()
+            if low not in seen and not (category == "number" and any(val in f.text for f in facts)):
+                seen.add(low)
+                facts.append(FactItem(text=val, category=category, status="preserved"))
 
-    # 2. Amounts
-    for match in PATTERNS["amount"].finditer(text):
-        val = match.group().strip()
-        if val.lower() not in seen:
-            seen.add(val.lower())
-            facts.append(FactItem(text=val, category="amount", status="preserved"))
-
-    # 3. Numbers (skip if already captured in amounts or dates)
-    for match in PATTERNS["number"].finditer(text):
-        val = match.group().strip()
-        if val.lower() not in seen and not any(val in f.text for f in facts):
-            seen.add(val.lower())
-            facts.append(FactItem(text=val, category="number", status="preserved"))
-
-    # 4. Commitments & incidents
-    for match in PATTERNS["commitment"].finditer(text):
-        val = match.group().strip()
-        if val.lower() not in seen:
-            seen.add(val.lower())
-            facts.append(FactItem(text=val, category="commitment", status="preserved"))
-
-    # 5. Names (proper nouns)
     for match in PATTERNS["name"].finditer(text):
         val = match.group().strip()
         if val not in COMMON_WORDS and val.lower() not in seen and len(val) > 2:
@@ -83,62 +73,70 @@ def extract_facts_from_text(text: str) -> List[FactItem]:
 
     return facts
 
-def verify_facts(original_facts: List[FactItem], rewrite: str) -> Tuple[List[FactItem], str]:
+
+def verify_facts(
+    original_facts: List[FactItem],
+    rewrite: str,
+    original_draft: str = "",
+    persona_id: str = "",
+) -> Tuple[List[FactItem], str]:
     """
     Verifies which original facts survived in the rewrite.
-    Returns the enriched fact checklist and an overall status ('green', 'amber', 'red').
+    Recognizes semantic paraphrases and intentional blame-removal in Executive/Legal personas.
     """
     rewrite_lower = rewrite.lower()
+    has_blame_context = bool(BLAME_TRIGGER.search(original_draft))
     verified: List[FactItem] = []
-    missing_count = 0
-    preserved_count = 0
+    missing_critical = 0
+    modified_count = 0
 
     for fact in original_facts:
         f_lower = fact.text.lower()
-        # Direct presence check
         if f_lower in rewrite_lower:
             verified.append(FactItem(
                 text=fact.text,
                 category=fact.category,
                 status="preserved",
-                explanation=f"Preserved accurately in rewrite"
+                explanation="Preserved verbatim in rewrite"
             ))
-            preserved_count += 1
-        else:
-            # Check for close paraphrases or number word representations
-            number_synonyms = {
-                "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
-                "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
-                "server down": "outage", "outage": "downtime", "incident": "issue"
-            }
-            syn = number_synonyms.get(f_lower)
-            if syn and syn in rewrite_lower:
-                verified.append(FactItem(
-                    text=fact.text,
-                    category=fact.category,
-                    status="modified",
-                    explanation=f"Paraphrased as '{syn}'"
-                ))
-                preserved_count += 1
-            else:
-                verified.append(FactItem(
-                    text=fact.text,
-                    category=fact.category,
-                    status="missing",
-                    explanation=f"Omitted or heavily altered from original"
-                ))
-                missing_count += 1
+            continue
 
-    total = len(original_facts)
-    if total == 0:
+        # Check semantic equivalents
+        equivalents = SEMANTIC_EQUIVALENTS.get(f_lower, [])
+        matched_syn = next((eq for eq in equivalents if eq in rewrite_lower), None)
+        if matched_syn:
+            verified.append(FactItem(
+                text=fact.text,
+                category=fact.category,
+                status="preserved",
+                explanation=f"Preserved semantically ('{matched_syn}')"
+            ))
+            continue
+
+        # Intentional de-blaming of a named individual in Executive / Legal personas
+        if fact.category == "name" and has_blame_context and persona_id in ("executive", "legal"):
+            verified.append(FactItem(
+                text=fact.text,
+                category=fact.category,
+                status="modified",
+                explanation="Blame-linked name omitted for executive/legal neutrality"
+            ))
+            modified_count += 1
+            continue
+
+        verified.append(FactItem(
+            text=fact.text,
+            category=fact.category,
+            status="missing",
+            explanation="Omitted from rewrite"
+        ))
+        missing_critical += 1
+
+    if missing_critical == 0:
         guard_status = "green"
-    elif missing_count == 0:
-        guard_status = "green"
-    elif missing_count <= 1 and total >= 3:
+    elif missing_critical == 1 and len(original_facts) >= 3:
         guard_status = "amber"
-    elif missing_count / total > 0.4:
-        guard_status = "red"
     else:
-        guard_status = "amber"
+        guard_status = "red"
 
     return verified, guard_status

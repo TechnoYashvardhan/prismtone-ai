@@ -5,6 +5,7 @@ Defines request and response structures for full type safety.
 from typing import List, Dict, Optional, Literal
 from pydantic import BaseModel, Field
 
+
 class SliderSettings(BaseModel):
     formality: int = Field(default=5, ge=1, le=10, description="1 (Ultra casual) to 10 (Strictly formal)")
     warmth: int = Field(default=5, ge=1, le=10, description="1 (Ice cold) to 10 (Empathetic / warm)")
@@ -12,15 +13,18 @@ class SliderSettings(BaseModel):
     directness: int = Field(default=5, ge=1, le=10, description="1 (Diplomatic / gentle) to 10 (Direct to the point)")
     humor: int = Field(default=1, ge=1, le=10, description="1 (Deadpan serious) to 10 (Playful)")
 
+
 class FactItem(BaseModel):
     text: str
     category: Literal["date", "number", "name", "amount", "commitment", "entity"]
     status: Literal["preserved", "modified", "missing", "new"]
     explanation: Optional[str] = None
 
+
 class DiffChunk(BaseModel):
     type: Literal["unchanged", "added", "deleted"]
     text: str
+
 
 class ToneMetrics(BaseModel):
     formality: float = Field(ge=1.0, le=10.0)
@@ -31,6 +35,7 @@ class ToneMetrics(BaseModel):
     length_change_pct: float
     change_score: float = Field(ge=0.0, le=100.0, description="0 (identical) to 100 (complete overhaul)")
     word_count: int
+
 
 class PersonaOutput(BaseModel):
     persona_id: str
@@ -45,6 +50,7 @@ class PersonaOutput(BaseModel):
     change_notes: List[str] = []
     diff_tokens: List[DiffChunk] = []
 
+
 class TransformRequest(BaseModel):
     draft: str = Field(..., min_length=2, max_length=5000, description="Raw draft or bullet points")
     personas: List[str] = Field(
@@ -57,7 +63,8 @@ class TransformRequest(BaseModel):
     privacy_mode: bool = Field(default=True, description="Mask PII before processing and unmask in output")
     sliders: Optional[SliderSettings] = None
     custom_persona_prompt: Optional[str] = None
-    api_key: Optional[str] = None # Optional user-supplied API key
+    api_key: Optional[str] = None
+
 
 class TransformResponse(BaseModel):
     original_text: str
@@ -66,14 +73,20 @@ class TransformResponse(BaseModel):
     processing_time_ms: float
     privacy_masked: bool = False
     masked_entities_count: int = 0
+    ai_engine: str = "offline_fallback"
+    model_used: str = "heuristic-v1"
+
 
 class ToneDecodeRequest(BaseModel):
     incoming_text: str = Field(..., min_length=2, max_length=5000)
+    api_key: Optional[str] = None
+
 
 class SuggestedReplyAngle(BaseModel):
     title: str
     vibe: str
     recommended_snippet: str
+
 
 class ToneDecodeResponse(BaseModel):
     dominant_tone: str
@@ -83,3 +96,5 @@ class ToneDecodeResponse(BaseModel):
     sentiment: Literal["Positive", "Neutral", "Guarded", "Passive-Aggressive", "Critical"]
     key_signals: List[str]
     suggested_reply_strategies: List[SuggestedReplyAngle]
+    ai_engine: str = "offline_fallback"
+    model_used: str = "heuristic-v1"
