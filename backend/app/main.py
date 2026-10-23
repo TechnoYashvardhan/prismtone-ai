@@ -2,29 +2,69 @@
 PrismTone Main FastAPI Application
 Clean, modular, and high-performance API server.
 """
+import logging
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.schemas import (
+    DiffRequest, DiffResponse,
     TransformRequest, TransformResponse,
-    ToneDecodeRequest, ToneDecodeResponse
+    ToneDecodeRequest, ToneDecodeResponse,
 )
+from app.services.diff_engine import calculate_change_score, compute_word_diff
 from app.services.llm_engine import transform_draft, PERSONA_PROFILES
 from app.services.tone_decoder import decode_incoming_message
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
+logger = logging.getLogger("prismtone.api")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="PrismTone: Instant Persona and Communication Transformer API"
+    description="PrismTone: Instant Persona and Communication Transformer API",
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+DEMO_PRESETS = [
+    {
+        "id": "vibeathon_official",
+        "title": "⚡ Vibeathon Official Demo",
+        "category": "Engineering",
+        "draft": "Server went down, it's Raj's fault, fix by Friday.",
+    },
+    {
+        "id": "student_professor",
+        "title": "🎓 Professor Extension Request",
+        "category": "Academic",
+        "draft": "Missed the deadline for the AI lab because my laptop died. Can I submit tomorrow?",
+    },
+    {
+        "id": "placement_hr",
+        "title": "💼 Placement Drive Follow-Up",
+        "category": "Career",
+        "draft": "Interview was last week, nobody emailed me yet. Are you offering me the job or not?",
+    },
+    {
+        "id": "club_announcement",
+        "title": "📣 College Club Announcement",
+        "category": "Campus",
+        "draft": "Coding club meetup on Saturday 4pm in Lab 3. Bring laptops. Pizza for first 30 people.",
+    },
+    {
+        "id": "manager_critique",
+        "title": "👔 Manager Feedback",
+        "category": "Management",
+        "draft": "The deck was bad and messy, you clearly didn't practice, redo the numbers before tomorrow.",
+    },
+]
 
 
 @app.get("/health")
@@ -34,7 +74,7 @@ def health_check():
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
-        "ai_ready": bool(settings.GEMINI_API_KEY or settings.OPENAI_API_KEY),
+        "ai_ready": bool(settings.GEMINI_API_KEY),
         "primary_model": settings.GEMINI_MODEL,
         "fallback_model": settings.GEMINI_FALLBACK_MODEL,
         "supported_personas": list(PERSONA_PROFILES.keys()),
@@ -43,63 +83,43 @@ def health_check():
 
 @app.get(f"{settings.API_PREFIX}/presets")
 def get_demo_presets():
-    """Returns curated demo drafts for quick 1-click testing during presentations."""
-    return [
-        {
-            "id": "vibeathon_official",
-            "title": "Production Server Outage (Official Vibeathon Demo)",
-            "category": "Engineering / Operations",
-            "draft": "Server went down, it's Raj's fault, fix by Friday."
-        },
-        {
-            "id": "student_professor",
-            "title": "Late Assignment Submission (Student Preset)",
-            "category": "Academic",
-            "draft": "Missed the deadline for the AI lab because my laptop died. Can I submit tomorrow?"
-        },
-        {
-            "id": "internship_hr",
-            "title": "Interview Follow-Up (Early Career)",
-            "category": "Career / Placement",
-            "draft": "Interview was last week, nobody emailed me yet. Are you offering me the job or not?"
-        },
-        {
-            "id": "manager_critique",
-            "title": "Constructive Project Feedback (Manager)",
-            "category": "Management",
-            "draft": "The deck was bad and messy, you clearly didn't practice, redo the numbers before tomorrow."
-        }
-    ]
+    """Curated demo drafts for 1-click testing during presentations."""
+    return DEMO_PRESETS
 
 
 @app.get(f"{settings.API_PREFIX}/personas")
 def get_personas():
-    """Returns all available persona templates with metadata."""
-    return PERSONA_PROFILES
+    """All built-in persona templates with metadata."""
+    return {pid: {"name": p["name"], "tagline": p["tagline"]} for pid, p in PERSONA_PROFILES.items()}
 
 
 @app.post(f"{settings.API_PREFIX}/transform", response_model=TransformResponse)
 async def api_transform_draft(request: TransformRequest):
-    """
-    Transforms a rough draft into multi-persona communication cards
-    with word diff, Fact Guard checklist, risk analysis, and change scoring.
-    """
+    """Multi-persona rewrite with word diff, Fact Guard, risk flags, and tone metrics."""
     try:
         return await transform_draft(request)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Transform failed")
+        raise HTTPException(status_code=500, detail="Transformation failed. Please retry.")
+
+
+@app.post(f"{settings.API_PREFIX}/diff", response_model=DiffResponse)
+def api_diff(request: DiffRequest):
+    """Word-level diff between any two texts (used by Compare Mode)."""
+    return DiffResponse(
+        diff_tokens=compute_word_diff(request.text1, request.text2),
+        change_score=calculate_change_score(request.text1, request.text2),
+    )
 
 
 @app.post(f"{settings.API_PREFIX}/decode", response_model=ToneDecodeResponse)
 async def api_decode_tone(request: ToneDecodeRequest):
-    """
-    Tone Decoder (Reverse Mode): Analyzes incoming message tone, hidden urgency,
-    subtext translation, and offers 3 strategic reply angles.
-    """
+    """Tone Decoder (Reverse Mode): subtext, urgency, and 3 tactical reply angles."""
     try:
         return await decode_incoming_message(request.incoming_text, api_key=request.api_key)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Decode failed")
+        raise HTTPException(status_code=500, detail="Tone decoding failed. Please retry.")
 
 
 if __name__ == "__main__":

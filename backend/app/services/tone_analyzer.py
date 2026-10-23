@@ -72,6 +72,20 @@ def calculate_reading_grade(text: str) -> Tuple[float, str]:
 
     return grade, label
 
+def brevity_score(word_count: int) -> float:
+    """Maps word count to a 1-10 conciseness score (10 = very crisp, 1 = very long)."""
+    if word_count <= 12:
+        return 10.0
+    if word_count >= 120:
+        return 1.0
+    return round(10.0 - (word_count - 12) * (9.0 / 108.0), 1)
+
+
+def readability_score(reading_grade: float) -> float:
+    """Maps Flesch-Kincaid grade to a 1-10 ease score (10 = effortless to read)."""
+    return round(max(1.0, min(10.0, 10.6 - reading_grade * 0.6)), 1)
+
+
 def detect_risk_flags(text: str) -> List[str]:
     """
     Scans text for compliance and reputational risk markers.
