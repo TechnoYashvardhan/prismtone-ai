@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Sparkles, Sliders, ShieldCheck, Lock, Mic, Square, RotateCcw,
   Download, Printer, Plus, Activity, Radar, GitCompareArrows,
-  Search, History, AlertTriangle, Send, Copy, Check, Info, FileText
+  Search, History, AlertTriangle, Send, Copy, Check, FileText,
+  Volume2, Eye, LayoutList, CheckCircle2, ChevronRight, ArrowRight,
+  TrendingUp, Terminal, Star, Trash2
 } from 'lucide-react';
 
 import {
@@ -22,21 +24,42 @@ import { api } from './lib/api';
 import { usePersistentState, useHistory } from './lib/storage';
 import { useSpeechInput, useSpeaker } from './lib/speech';
 import { buildMarkdownReport, downloadTextFile, printReport, copyText } from './lib/export';
-import { buildPersonaRegistry, personaColor, slidersToTarget } from './lib/personas';
+import { buildPersonaRegistry, personaColor, slidersToTarget, slugifyPersonaId } from './lib/personas';
 
 import { useToasts, ToastStack } from './components/Toasts';
-import PersonaCard, { PersonaCardSkeleton } from './components/PersonaCard';
+import DiffView, { DiffLegend } from './components/DiffView';
 import InsightsPanel from './components/InsightsPanel';
 import CompareView from './components/CompareView';
-import HistoryPanel from './components/HistoryPanel';
-import CustomPersonaModal from './components/CustomPersonaModal';
+
+const COLLEGE_TEMPLATES = [
+  {
+    name: 'Professor Email',
+    tagline: 'Academic Etiquette',
+    description: 'Polite, deferential, academic tone. Preserves deadlines, states reason respectfully, and includes polite closing.'
+  },
+  {
+    name: 'Placement HR Follow-up',
+    tagline: 'Campus Recruitment',
+    description: 'Professional, confident campus placement drive query. Respectful of recruitment timelines while requesting status.'
+  },
+  {
+    name: 'Investor Update',
+    tagline: 'Executive Brevity',
+    description: 'Crisp, metrics-driven, highlights growth, risks, and next quarterly milestones without technical jargon.'
+  },
+  {
+    name: 'Customer Apology',
+    tagline: 'De-escalation & Care',
+    description: 'Empathetic, accountable, zero excuses, offering immediate remediation and goodwill credit.'
+  }
+];
 
 export default function App() {
   const { toasts, notify } = useToasts();
   const history = useHistory();
 
-  // Navigation tab: 'generator' | 'insights' | 'compare' | 'decoder' | 'history'
-  const [activeTab, setActiveTab] = useState('generator');
+  // Navigation tab: 'studio' | 'radar' | 'compare' | 'decoder' | 'foundry' | 'vault'
+  const [activeTab, setActiveTab] = useState('studio');
 
   // Input states
   const [draft, setDraft] = useState(DEMO_DRAFT);
@@ -49,24 +72,33 @@ export default function App() {
 
   // Custom Personas & Selection
   const [customPersonas, setCustomPersonas] = usePersistentState('prismtone.custom_personas.v1', []);
-  const [customModalOpen, setCustomModalOpen] = useState(false);
   const [selectedPersonaIds, setSelectedPersonaIds] = useState(['executive', 'peer', 'legal', 'gen_z']);
 
   // Results & View modes
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
+  const [activePersonaId, setActivePersonaId] = useState('executive');
+  const [stageViewMode, setStageViewMode] = useState('focus'); // 'focus' | 'stream'
+  const [diffMode, setDiffMode] = useState(false);
+  const [factsDrawerOpen, setFactsDrawerOpen] = useState(false);
+  const [copiedStage, setCopiedStage] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState(null);
-  const [viewModes, setViewModes] = useState({}); // { [personaId]: 'clean' | 'diff' }
-  const [expandedFacts, setExpandedFacts] = useState({}); // { [personaId]: boolean }
-  const [copiedId, setCopiedId] = useState(null);
 
-  // Decoder State (Reverse Mode)
+  // Tone Decoder State
   const [decoderInput, setDecoderInput] = useState(DECODER_PRESETS[0]);
   const [decoderLoading, setDecoderLoading] = useState(false);
   const [decoderResult, setDecoderResult] = useState(null);
   const [copiedReplyIdx, setCopiedReplyIdx] = useState(null);
 
-  // Persona registry lookup (covers built-ins + custom)
+  // Persona Foundry (Builder) state
+  const [foundryName, setFoundryName] = useState('');
+  const [foundryDesc, setFoundryDesc] = useState('');
+
+  // History search state
+  const [historySearch, setHistorySearch] = useState('');
+  const [filterStarredOnly, setFilterStarredOnly] = useState(false);
+
+  // Persona registry lookup
   const registry = useMemo(() => buildPersonaRegistry(customPersonas), [customPersonas]);
 
   // Audio / Speech Input & Output
@@ -75,30 +107,26 @@ export default function App() {
     lang: speechLang,
     onFinalText: (finalText) => {
       setDraft((prev) => (prev ? `${prev.trim()} ${finalText}` : finalText));
-      notify('Voice input appended to draft!', 'info');
+      notify('Voice transcription added to draft!', 'info');
     }
   });
 
   const speaker = useSpeaker();
 
-  // Keyboard shortcut: Ctrl+Enter / Cmd+Enter to transform
+  // Keyboard shortcut: Ctrl+Enter / Cmd+Enter
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        if (activeTab === 'generator') {
-          e.preventDefault();
-          handleTransform();
-        } else if (activeTab === 'decoder') {
-          e.preventDefault();
-          handleDecode();
-        }
+        e.preventDefault();
+        if (activeTab === 'studio') handleTransform();
+        else if (activeTab === 'decoder') handleDecode();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   });
 
-  // Initial transform on load
+  // Initial transform on mount
   useEffect(() => {
     handleTransform(DEMO_DRAFT);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -128,7 +156,12 @@ export default function App() {
       const resp = await api.transform(payload);
       setResults(resp);
 
-      // Save to local history
+      // Make sure active persona is in the results
+      const resIds = Object.keys(resp.results);
+      if (resIds.length > 0 && !resIds.includes(activePersonaId)) {
+        setActivePersonaId(resIds[0]);
+      }
+
       history.add({
         draft: textToRun,
         channel,
@@ -136,10 +169,10 @@ export default function App() {
         result: resp
       });
 
-      notify(`Transformed across ${Object.keys(resp.results).length} personas via ${resp.model_used}`, 'success');
+      notify(`Transformed across ${resIds.length} personas via ${resp.model_used.replace('models/', '')}`, 'success');
     } catch (err) {
       console.error('Transform error:', err);
-      notify(err.message || 'Transform failed. Check your network or API quota.', 'error');
+      notify(err.message || 'Transform failed. Check your connection or API quota.', 'error');
     } finally {
       setLoading(false);
     }
@@ -182,7 +215,7 @@ export default function App() {
     }
   }
 
-  // Tone Decoder (Reverse Mode)
+  // Tone Decoder
   async function handleDecode(incomingOverride = null) {
     const textToDecode = incomingOverride !== null ? incomingOverride : decoderInput;
     if (!textToDecode.trim()) return;
@@ -191,7 +224,7 @@ export default function App() {
     try {
       const resp = await api.decode(textToDecode);
       setDecoderResult(resp);
-      notify('Decoded subtext and tactical responses ready!', 'success');
+      notify('Subtext decoded with tactical responses!', 'success');
     } catch (err) {
       notify(`Decoder error: ${err.message}`, 'error');
     } finally {
@@ -200,37 +233,15 @@ export default function App() {
   }
 
   // Copy helper
-  const handleCopyCard = async (personaId, text) => {
+  const handleCopyText = async (text, onDone) => {
     const ok = await copyText(text);
     if (ok) {
-      setCopiedId(personaId);
-      notify('Copied rewrite to clipboard!', 'success');
-      setTimeout(() => setCopiedId(null), 2000);
+      onDone();
+      notify('Copied to clipboard!', 'success');
     }
   };
 
-  const handleCopyReply = async (index, text) => {
-    const ok = await copyText(text);
-    if (ok) {
-      setCopiedReplyIdx(index);
-      notify('Copied reply snippet!', 'success');
-      setTimeout(() => setCopiedReplyIdx(null), 2000);
-    }
-  };
-
-  // Custom persona management
-  const handleAddCustomPersona = (p) => {
-    setCustomPersonas((prev) => [...prev, p]);
-    setSelectedPersonaIds((prev) => [...prev, p.id]);
-  };
-
-  const handleDeleteCustomPersona = (id) => {
-    setCustomPersonas((prev) => prev.filter((p) => p.id !== id));
-    setSelectedPersonaIds((prev) => prev.filter((pid) => pid !== id));
-    notify('Custom persona removed.', 'info');
-  };
-
-  // Toggle selection chip
+  // Persona selection toggle
   const togglePersonaSelection = (id) => {
     setSelectedPersonaIds((prev) => {
       if (prev.includes(id)) {
@@ -244,7 +255,38 @@ export default function App() {
     });
   };
 
-  // Quick export current report
+  // Add Custom Persona from Foundry
+  const handleCreateCustomPersona = (e) => {
+    e?.preventDefault();
+    if (!foundryName.trim() || !foundryDesc.trim()) {
+      notify('Please provide both name and prompt description.', 'error');
+      return;
+    }
+    const newId = slugifyPersonaId(foundryName, customPersonas.map((p) => p.id));
+    const created = { id: newId, name: foundryName.trim(), description: foundryDesc.trim() };
+    setCustomPersonas((prev) => [...prev, created]);
+    setSelectedPersonaIds((prev) => [...prev, newId]);
+    setActivePersonaId(newId);
+    setFoundryName('');
+    setFoundryDesc('');
+    notify(`Created persona "${created.name}"!`, 'success');
+    setActiveTab('studio');
+  };
+
+  const handleDeleteCustomPersona = (id) => {
+    setCustomPersonas((prev) => prev.filter((p) => p.id !== id));
+    setSelectedPersonaIds((prev) => prev.filter((pid) => pid !== id));
+    if (activePersonaId === id) setActivePersonaId('executive');
+    notify('Custom persona removed.', 'info');
+  };
+
+  const handleApplyFoundryTemplate = (tpl) => {
+    setFoundryName(tpl.name);
+    setFoundryDesc(tpl.description);
+    notify(`Loaded "${tpl.name}" template.`, 'info');
+  };
+
+  // Export report
   const handleExportMarkdown = () => {
     if (!results) return;
     const md = buildMarkdownReport(results);
@@ -253,18 +295,23 @@ export default function App() {
     notify('Downloaded Markdown report!', 'success');
   };
 
-  // Stage Spotlight 1-click Demo Runner
+  // Spotlight 1-click Vibeathon Demo
   const runOfficialDemo = () => {
     setDraft(DEMO_DRAFT);
     setSelectedPersonaIds(['executive', 'peer', 'legal', 'gen_z']);
-    setActiveTab('generator');
+    setActiveTab('studio');
     handleTransform(DEMO_DRAFT);
   };
 
+  // Active persona object in results
+  const currentPersonaCard = results?.results?.[activePersonaId] || (results?.results ? Object.values(results.results)[0] : null);
+  const currentAccent = currentPersonaCard ? personaColor(registry, currentPersonaCard.persona_id) : '#818cf8';
+
+  // Available persona list
   const availablePersonaList = useMemo(() => {
     return [
       ...BUILT_IN_PERSONAS,
-      ...customPersonas.map((c, i) => ({
+      ...customPersonas.map((c) => ({
         id: c.id,
         name: c.name,
         color: personaColor(registry, c.id)
@@ -272,50 +319,59 @@ export default function App() {
     ];
   }, [customPersonas, registry]);
 
+  // Filtered history list
+  const filteredHistory = useMemo(() => {
+    let list = history.items;
+    if (filterStarredOnly) list = list.filter((i) => i.starred);
+    if (historySearch.trim()) {
+      const q = historySearch.toLowerCase();
+      list = list.filter((i) => i.draft.toLowerCase().includes(q));
+    }
+    return list;
+  }, [history.items, filterStarredOnly, historySearch]);
+
   return (
-    <div className="app">
-      {/* Top Header Bar */}
-      <header className="header row-between">
-        <div className="brand">
-          <div className="brand-logo">
-            <Sparkles size={24} color="#ffffff" />
+    <div className="app-container">
+      {/* ============================================================== */}
+      {/* 1. GLASS HEADER BAR                                            */}
+      {/* ============================================================== */}
+      <header className="glass-header">
+        <div className="brand-section">
+          <div className="brand-mark">
+            <Sparkles size={22} color="#ffffff" />
           </div>
           <div>
-            <h1>PrismTone</h1>
-            <p className="tiny muted" style={{ letterSpacing: '0.2px' }}>
-              Multi-Persona Communication Transformer &amp; Proof Engine • Vibeathon 2026
+            <div className="brand-title">
+              <span>PrismTone</span>
+              <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', letterSpacing: '0.4px' }}>
+                AI ENGINE
+              </span>
+            </div>
+            <p className="brand-subtitle">
+              Multi-Persona Communication Transformer &amp; Proof Engine
             </p>
           </div>
         </div>
 
-        <div className="row" style={{ gap: 10 }}>
+        <div className="row-center" style={{ gap: 10 }}>
           {/* Spotlight Stage Button */}
           <button
             type="button"
-            className="btn btn-solid"
+            className="stage-btn"
             onClick={runOfficialDemo}
-            title="Load Problem 1 Vibeathon Official Test Scenario"
-            style={{ border: '1px solid #6366f1' }}
+            title="Load Official Vibeathon Outage Demo"
+            style={{ borderColor: 'rgba(99,102,241,0.5)', background: 'rgba(99,102,241,0.12)', color: '#c7d2fe' }}
           >
-            <Sparkles size={13} color="#a5b4fc" /> ⚡ Vibeathon Demo
+            <Sparkles size={14} color="#818cf8" />
+            <span>⚡ Vibeathon Demo</span>
           </button>
 
-          {/* Custom Persona Builder */}
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setCustomModalOpen(true)}
-            title="Create a tailored persona (Professor, HR, Investor, etc.)"
-          >
-            <Plus size={13} /> Custom Persona
-          </button>
-
-          {/* Export Quick Actions */}
+          {/* Export Report Actions */}
           {results && (
             <>
               <button
                 type="button"
-                className="btn no-print"
+                className="stage-btn no-print"
                 onClick={handleExportMarkdown}
                 title="Download full audit report as Markdown"
               >
@@ -323,7 +379,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="btn no-print"
+                className="stage-btn no-print"
                 onClick={printReport}
                 title="Print or Save as PDF"
               >
@@ -332,351 +388,717 @@ export default function App() {
             </>
           )}
 
-          {/* Model Status Pill */}
-          <div className="badge badge-accent" title="Gemini 3.6 Flash with single-shot contrastive batching">
+          {/* Model Status Telemetry */}
+          <div
+            className="stage-btn"
+            style={{ cursor: 'default', background: 'rgba(16,185,129,0.08)', borderColor: 'rgba(16,185,129,0.25)', color: '#34d399' }}
+            title="Active Model: Gemini 3.6 Flash"
+          >
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
-            {results?.model_used ? results.model_used.replace('models/', '') : 'Gemini 3.6 Flash'}
+            <span className="mono" style={{ fontSize: 11 }}>
+              {results?.model_used ? results.model_used.replace('models/', '') : 'gemini-3.6-flash'}
+            </span>
           </div>
         </div>
       </header>
 
-      {/* Navigation Tabs */}
-      <nav className="tabs no-print" style={{ marginBottom: 20 }}>
+      {/* ============================================================== */}
+      {/* 2. DOCKED FLOATING NAVIGATION TABS                             */}
+      {/* ============================================================== */}
+      <nav className="nav-dock" aria-label="Main Navigation">
         <button
           type="button"
-          className="tab"
-          aria-selected={activeTab === 'generator'}
-          onClick={() => setActiveTab('generator')}
+          className={`nav-tab-item ${activeTab === 'studio' ? 'active' : ''}`}
+          onClick={() => setActiveTab('studio')}
         >
-          <Sparkles size={14} /> Persona Transformer
+          <Sparkles size={15} />
+          <span>Studio Workspace</span>
         </button>
 
         <button
           type="button"
-          className="tab"
-          aria-selected={activeTab === 'insights'}
-          onClick={() => setActiveTab('insights')}
+          className={`nav-tab-item ${activeTab === 'radar' ? 'active' : ''}`}
+          onClick={() => setActiveTab('radar')}
         >
-          <Radar size={14} /> Visual Radar &amp; Tone Shift
+          <Radar size={15} />
+          <span>Tone Telemetry &amp; Radar</span>
         </button>
 
         <button
           type="button"
-          className="tab"
-          aria-selected={activeTab === 'compare'}
+          className={`nav-tab-item ${activeTab === 'compare' ? 'active' : ''}`}
           onClick={() => setActiveTab('compare')}
         >
-          <GitCompareArrows size={14} /> Dual Compare Mode
+          <GitCompareArrows size={15} />
+          <span>Cross-Diff Inspector</span>
         </button>
 
         <button
           type="button"
-          className="tab"
-          aria-selected={activeTab === 'decoder'}
+          className={`nav-tab-item ${activeTab === 'decoder' ? 'active' : ''}`}
           onClick={() => setActiveTab('decoder')}
         >
-          <Search size={14} /> Tone Decoder (Reverse Mode)
+          <Search size={15} />
+          <span>Subtext Decoder</span>
         </button>
 
         <button
           type="button"
-          className="tab"
-          aria-selected={activeTab === 'history'}
-          onClick={() => setActiveTab('history')}
+          className={`nav-tab-item ${activeTab === 'foundry' ? 'active' : ''}`}
+          onClick={() => setActiveTab('foundry')}
         >
-          <History size={14} /> History ({history.items.length})
+          <Plus size={15} />
+          <span>Persona Foundry</span>
+          {customPersonas.length > 0 && <span className="tab-badge">{customPersonas.length}</span>}
+        </button>
+
+        <button
+          type="button"
+          className={`nav-tab-item ${activeTab === 'vault' ? 'active' : ''}`}
+          onClick={() => setActiveTab('vault')}
+        >
+          <History size={15} />
+          <span>History &amp; Vault</span>
+          <span className="tab-badge">{history.items.length}</span>
         </button>
       </nav>
 
       {/* ============================================================== */}
-      {/* TAB 1: PERSONA TRANSFORMER (CORE WORKSPACE)                   */}
+      {/* TAB 1: STUDIO WORKSPACE (ANTI-CARD SPLIT LAYOUT)               */}
       {/* ============================================================== */}
-      {activeTab === 'generator' && (
-        <div className="stack">
-          {/* Input Panel */}
-          <section className="panel stack" style={{ gap: 16 }}>
-            {/* Persona Selection Chips */}
+      {activeTab === 'studio' && (
+        <div className="studio-grid animate-tab-enter">
+          {/* Left Column: Command Console */}
+          <aside className="command-console">
+            {/* Active Persona Toggles */}
             <div>
-              <div className="row-between" style={{ marginBottom: 8 }}>
-                <span className="field-label" style={{ marginBottom: 0 }}>Active Personas ({selectedPersonaIds.length})</span>
-                <span className="tiny subtle">Click to toggle which voices to generate</span>
+              <div className="console-section-title">
+                <span>Target Personas ({selectedPersonaIds.length})</span>
+                <span className="subtle" style={{ fontSize: 10 }}>Click to toggle</span>
               </div>
-              <div className="row" style={{ gap: 8 }}>
+              <div className="persona-chips-rail">
                 {availablePersonaList.map((p) => {
                   const active = selectedPersonaIds.includes(p.id);
                   return (
                     <button
                       key={p.id}
                       type="button"
-                      className="chip"
-                      aria-pressed={active}
+                      className={`persona-toggle-pill ${active ? 'active' : ''}`}
+                      style={{ '--persona-accent': p.color }}
                       onClick={() => togglePersonaSelection(p.id)}
-                      style={{
-                        borderColor: active ? p.color : undefined,
-                        color: active ? '#ffffff' : undefined,
-                        background: active ? `${p.color}26` : undefined
-                      }}
                     >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: '50%',
-                          background: p.color,
-                          display: 'inline-block',
-                          marginRight: 6
-                        }}
-                      />
-                      {p.name}
+                      <span className="pill-dot" />
+                      <span>{p.name}</span>
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            {/* Draft Textarea with Dictation & Counter */}
-            <div style={{ position: 'relative' }}>
-              <div className="row-between" style={{ marginBottom: 6 }}>
-                <label htmlFor="draft-input" className="field-label" style={{ marginBottom: 0 }}>
-                  Raw Thought / Draft Communication
-                </label>
-                <div className="row" style={{ gap: 8 }}>
-                  <span className={`tiny ${draft.length > MAX_DRAFT_CHARS ? 'fact-missing' : 'subtle'}`}>
-                    {draft.length} / {MAX_DRAFT_CHARS} chars
-                  </span>
-                </div>
+            {/* Prompt Console Box */}
+            <div className="prompt-box-wrapper">
+              <div className="console-section-title" style={{ marginBottom: 6 }}>
+                <span>Unvarnished Thought / Draft</span>
+                <span className={`mono ${draft.length > MAX_DRAFT_CHARS ? 'fact-missing' : 'subtle'}`} style={{ fontSize: 10 }}>
+                  {draft.length}/{MAX_DRAFT_CHARS}
+                </span>
               </div>
 
               <textarea
-                id="draft-input"
-                className={`textarea ${draft.length > MAX_DRAFT_CHARS ? 'over-limit' : ''}`}
-                rows={4}
+                className="prompt-textarea"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Type or dictate your unvarnished message here (e.g. 'Server went down, it's Raj's fault, fix by Friday.')..."
+                placeholder="Type or speak what you really mean (e.g. 'Server went down, it's Raj's fault, fix by Friday.')..."
               />
 
-              {/* Dictation Interim Floating Banner */}
+              {/* Dictation Waveform Banner */}
               {speechInput.listening && (
                 <div
-                  className="inset banner banner-green"
-                  style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    background: 'rgba(239,68,68,0.12)',
+                    border: '1px solid rgba(239,68,68,0.3)',
+                    marginTop: 8
+                  }}
                 >
-                  <span className="mic-live" style={{ width: 10, height: 10, borderRadius: '50%', background: '#ef4444' }} />
-                  <span className="tiny" style={{ flex: 1 }}>
-                    <strong>Listening...</strong> {speechInput.interim || 'Speak now into your microphone...'}
-                  </span>
-                  <button type="button" className="btn btn-icon" onClick={speechInput.stop} title="Stop voice recording">
-                    <Square size={12} />
+                  <div className="row-center">
+                    <span className="mic-active-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />
+                    <span style={{ fontSize: 12, color: '#fca5a5' }}>
+                      <strong>Dictating:</strong> {speechInput.interim || 'Listening to your microphone...'}
+                    </span>
+                  </div>
+                  <button type="button" onClick={speechInput.stop} className="stage-btn" style={{ padding: '3px 8px', fontSize: 10 }}>
+                    <Square size={10} /> Stop
                   </button>
                 </div>
               )}
+
+              <div className="prompt-footer">
+                <div className="row-center">
+                  {speechInput.supported && (
+                    <button
+                      type="button"
+                      className={`stage-btn ${speechInput.listening ? 'mic-active-pulse' : ''}`}
+                      style={{
+                        padding: '4px 10px',
+                        background: speechInput.listening ? 'rgba(239,68,68,0.2)' : undefined,
+                        color: speechInput.listening ? '#fca5a5' : undefined
+                      }}
+                      onClick={speechInput.listening ? speechInput.stop : speechInput.start}
+                      title="Dictate with voice input"
+                    >
+                      <Mic size={12} />
+                      <span>{speechInput.listening ? 'Recording...' : 'Voice Input'}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="row-center subtle">
+                  <span>Shortcut:</span>
+                  <kbd style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.08)', fontSize: 10, fontFamily: 'monospace' }}>
+                    ⌘ Enter
+                  </kbd>
+                </div>
+              </div>
             </div>
 
-            {/* Presets Quick Pick Carousel */}
+            {/* Quick Scenario Presets */}
             <div>
-              <span className="field-label">Try Quick Scenario Presets</span>
-              <div className="row" style={{ gap: 8 }}>
-                {PRESETS.map((item) => (
+              <div className="console-section-title">
+                <span>Scenario Presets</span>
+              </div>
+              <div className="preset-strip">
+                {PRESETS.map((p) => (
                   <button
-                    key={item.id}
+                    key={p.id}
                     type="button"
-                    className="btn"
+                    className="preset-chip"
                     onClick={() => {
-                      setDraft(item.draft);
-                      handleTransform(item.draft);
+                      setDraft(p.draft);
+                      handleTransform(p.draft);
                     }}
                   >
-                    {item.title}
+                    <span>{p.title}</span>
+                    <ChevronRight size={13} className="subtle" />
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Delivery Channel, Length, Language & Sliders Controls */}
-            <div className="row-between" style={{ gap: 12, borderTop: '1px solid var(--border-subtle)', paddingTop: 14 }}>
-              <div className="row" style={{ gap: 10 }}>
-                {/* Channel */}
-                <div>
-                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Channel</span>
-                  <select className="input" value={channel} onChange={(e) => setChannel(e.target.value)} style={{ padding: '6px 10px' }}>
-                    {CHANNELS.map((c) => (
-                      <option key={c.id} value={c.id}>{c.icon} {c.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Length */}
-                <div>
-                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Length</span>
-                  <select className="input" value={length} onChange={(e) => setLength(e.target.value)} style={{ padding: '6px 10px' }}>
-                    {LENGTHS.map((l) => (
-                      <option key={l.id} value={l.id}>{l.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Language */}
-                <div>
-                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Language</span>
-                  <select className="input" value={language} onChange={(e) => setLanguage(e.target.value)} style={{ padding: '6px 10px' }}>
-                    {LANGUAGES.map((l) => (
-                      <option key={l.id} value={l.id}>{l.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Privacy Mode Toggle */}
-                <button
-                  type="button"
-                  className={`btn ${privacyMode ? 'btn-green-on' : ''}`}
-                  onClick={() => setPrivacyMode(!privacyMode)}
-                  title="Client-side redaction of emails, phones, and SSNs before sending to Gemini"
-                  style={{ alignSelf: 'flex-end', height: 35 }}
-                >
-                  <Lock size={12} /> Privacy Guard: {privacyMode ? 'ON' : 'OFF'}
-                </button>
-
-                {/* Sliders Accordion Toggle */}
-                <button
-                  type="button"
-                  className={`btn ${slidersOpen ? 'btn-on' : ''}`}
-                  onClick={() => setSlidersOpen(!slidersOpen)}
-                  title="Fine-tune formality, warmth, brevity, and directness"
-                  style={{ alignSelf: 'flex-end', height: 35 }}
-                >
-                  <Sliders size={12} /> Tone Sliders {slidersOpen ? '▲' : '▼'}
-                </button>
+            {/* Channel, Length, Language controls */}
+            <div className="controls-subgrid">
+              <div className="control-item">
+                <span className="subtle" style={{ fontSize: 10, fontWeight: 700 }}>CHANNEL</span>
+                <select className="control-select" value={channel} onChange={(e) => setChannel(e.target.value)}>
+                  {CHANNELS.map((c) => (
+                    <option key={c.id} value={c.id}>{c.icon} {c.label}</option>
+                  ))}
+                </select>
               </div>
 
-              {/* Action Buttons: Mic + Transform */}
-              <div className="row" style={{ gap: 10 }}>
-                {speechInput.supported && (
-                  <button
-                    type="button"
-                    className={`btn ${speechInput.listening ? 'btn-danger-on mic-live' : ''}`}
-                    onClick={speechInput.listening ? speechInput.stop : speechInput.start}
-                    title="Dictate with voice input (Web Speech API)"
-                    style={{ height: 42, padding: '0 14px' }}
-                  >
-                    <Mic size={16} />
-                    {speechInput.listening ? 'Recording...' : 'Dictate'}
-                  </button>
-                )}
+              <div className="control-item">
+                <span className="subtle" style={{ fontSize: 10, fontWeight: 700 }}>LENGTH</span>
+                <select className="control-select" value={length} onChange={(e) => setLength(e.target.value)}>
+                  {LENGTHS.map((l) => (
+                    <option key={l.id} value={l.id}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
 
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => handleTransform()}
-                  disabled={loading}
-                  style={{ height: 42, padding: '0 24px' }}
-                >
-                  <Sparkles size={16} className={loading ? 'animate-spin' : ''} />
-                  {loading ? 'PrismTone is Processing...' : 'Transform Personas (Ctrl+Enter)'}
-                </button>
+              <div className="control-item">
+                <span className="subtle" style={{ fontSize: 10, fontWeight: 700 }}>LANGUAGE</span>
+                <select className="control-select" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                  {LANGUAGES.map((l) => (
+                    <option key={l.id} value={l.id}>{l.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
-            {/* Sliders Expansion Drawer */}
+            {/* Sliders and Privacy Toggles */}
+            <div className="row-between">
+              <button
+                type="button"
+                className="stage-btn"
+                style={{
+                  background: privacyMode ? 'rgba(16,185,129,0.1)' : undefined,
+                  borderColor: privacyMode ? 'rgba(16,185,129,0.3)' : undefined,
+                  color: privacyMode ? '#34d399' : undefined
+                }}
+                onClick={() => setPrivacyMode(!privacyMode)}
+                title="Client-side PII Redaction Guard"
+              >
+                <Lock size={12} />
+                <span>Privacy Guard: {privacyMode ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <button
+                type="button"
+                className="stage-btn"
+                style={{
+                  background: slidersOpen ? 'rgba(99,102,241,0.15)' : undefined,
+                  borderColor: slidersOpen ? 'rgba(99,102,241,0.4)' : undefined,
+                  color: slidersOpen ? '#a5b4fc' : undefined
+                }}
+                onClick={() => setSlidersOpen(!slidersOpen)}
+              >
+                <Sliders size={12} />
+                <span>Tone Sliders {slidersOpen ? '▲' : '▼'}</span>
+              </button>
+            </div>
+
+            {/* Expandable Sliders Sheet */}
             {slidersOpen && (
-              <div className="inset stack" style={{ gap: 12, padding: 14 }}>
+              <div className="sliders-sheet">
                 <div className="row-between">
-                  <span className="tiny muted" style={{ fontWeight: 700 }}>5-Axis Tone Fine Tuning (1–10)</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc' }}>5-Axis Tone Calibration</span>
                   <button
                     type="button"
-                    className="btn"
-                    style={{ padding: '2px 8px', fontSize: 11 }}
+                    style={{ fontSize: 10, color: '#94a3b8' }}
                     onClick={() => setSliders(DEFAULT_SLIDERS)}
                   >
-                    Reset Defaults
+                    Reset
                   </button>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
-                  {SLIDERS.map((s) => (
-                    <div key={s.key}>
-                      <div className="row-between tiny subtle" style={{ marginBottom: 4 }}>
-                        <span>{s.label}</span>
-                        <strong className="mono" style={{ color: '#818cf8' }}>{sliders[s.key]}</strong>
-                      </div>
-                      <input
-                        type="range"
-                        min={1}
-                        max={10}
-                        value={sliders[s.key]}
-                        onChange={(e) => setSliders({ ...sliders, [s.key]: Number(e.target.value) })}
-                      />
-                      <div className="row-between tiny subtle" style={{ fontSize: 9 }}>
-                        <span>{s.min}</span>
-                        <span>{s.max}</span>
-                      </div>
+                {SLIDERS.map((s) => (
+                  <div key={s.key} className="slider-row">
+                    <div className="slider-labels">
+                      <span className="subtle">{s.label}</span>
+                      <span className="mono" style={{ color: '#818cf8', fontWeight: 700 }}>{sliders[s.key]}/10</span>
                     </div>
-                  ))}
+                    <input
+                      type="range"
+                      min={1}
+                      max={10}
+                      className="modern-slider"
+                      value={sliders[s.key]}
+                      onChange={(e) => setSliders({ ...sliders, [s.key]: Number(e.target.value) })}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Run Button */}
+            <button
+              type="button"
+              className="btn-prism-run"
+              onClick={() => handleTransform()}
+              disabled={loading}
+            >
+              <Sparkles size={16} className={loading ? 'animate-spin' : ''} />
+              <span>{loading ? 'Synthesizing Personas...' : 'Transform Across Personas'}</span>
+            </button>
+          </aside>
+
+          {/* Right Column: Unified Persona Stage (No Boxy Cards!) */}
+          <main className="stage-surface" style={{ '--active-persona-color': currentAccent }}>
+            {/* Stage Header Rail */}
+            <div className="stage-header-rail">
+              <div className="stage-persona-tabs">
+                {results?.results && Object.values(results.results).map((item) => {
+                  const isActive = activePersonaId === item.persona_id;
+                  const color = personaColor(registry, item.persona_id);
+                  return (
+                    <button
+                      key={item.persona_id}
+                      type="button"
+                      className={`stage-tab-btn ${isActive ? 'active' : ''}`}
+                      onClick={() => setActivePersonaId(item.persona_id)}
+                    >
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          background: color,
+                          display: 'inline-block',
+                          boxShadow: isActive ? `0 0 10px ${color}` : 'none'
+                        }}
+                      />
+                      <span>{item.persona_name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* View Switcher: Focus Single Persona vs Stream Flow */}
+              <div className="stage-view-toggle">
+                <button
+                  type="button"
+                  className={`stage-view-btn ${stageViewMode === 'focus' ? 'active' : ''}`}
+                  onClick={() => setStageViewMode('focus')}
+                  title="Focus mode: deeply inspect active persona"
+                >
+                  Focus View
+                </button>
+                <button
+                  type="button"
+                  className={`stage-view-btn ${stageViewMode === 'stream' ? 'active' : ''}`}
+                  onClick={() => setStageViewMode('stream')}
+                  title="Stream mode: view all persona rewrites consecutively"
+                >
+                  Stream View
+                </button>
+              </div>
+            </div>
+
+            {/* Loading Indicator */}
+            {loading && !results && (
+              <div style={{ padding: 48, textAlign: 'center', color: '#94a3b8' }}>
+                <Sparkles size={32} color="#818cf8" className="animate-spin" style={{ margin: '0 auto 16px' }} />
+                <p style={{ fontWeight: 600 }}>Synthesizing multi-persona communications...</p>
+                <p className="subtle" style={{ fontSize: 12, marginTop: 4 }}>Applying single-shot contrastive reasoning via Gemini 3.6 Flash</p>
+              </div>
+            )}
+
+            {/* FOCUS VIEW (Active Persona Spotlight) */}
+            {stageViewMode === 'focus' && currentPersonaCard && (
+              <div className="stage-viewport animate-tab-enter" key={currentPersonaCard.persona_id}>
+                {/* Persona Header & Fact Guard Badge */}
+                <div className="stage-persona-meta">
+                  <div className="persona-headline">
+                    <h2>
+                      <span style={{ color: currentAccent }}>{currentPersonaCard.persona_name}</span>
+                    </h2>
+                    <p>{currentPersonaCard.tagline}</p>
+                  </div>
+
+                  <button
+                    type="button"
+                    className={`fact-guard-badge ${currentPersonaCard.fact_guard_status}`}
+                    onClick={() => setFactsDrawerOpen(!factsDrawerOpen)}
+                    title="Click to toggle fact preservation audit matrix"
+                  >
+                    <ShieldCheck size={14} />
+                    <span>
+                      {currentPersonaCard.fact_guard_status === 'green' ? 'Facts Preserved' : currentPersonaCard.fact_guard_status === 'amber' ? 'Check Facts' : 'Fact Alert'}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Fact Guard Matrix Drawer */}
+                {factsDrawerOpen && (
+                  <div className="fact-guard-matrix">
+                    <div className="row-between" style={{ paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc' }}>Fact Guard Verification Matrix</span>
+                      <span className="subtle" style={{ fontSize: 10 }}>Dates, numbers, names &amp; commitments</span>
+                    </div>
+                    {currentPersonaCard.facts_found.length === 0 && (
+                      <span className="subtle" style={{ fontSize: 12 }}>No critical facts detected in draft.</span>
+                    )}
+                    {currentPersonaCard.facts_found.map((f, i) => (
+                      <div key={i} className="fact-matrix-row">
+                        <div>
+                          <code style={{ color: '#ffffff' }}>{f.text}</code>
+                          <span className="subtle" style={{ marginLeft: 6 }}>({f.category})</span>
+                        </div>
+                        <span style={{
+                          fontWeight: 700,
+                          color: f.status === 'preserved' ? '#34d399' : f.status === 'modified' ? '#fbbf24' : '#f87171'
+                        }}>
+                          {f.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Subject Line if present */}
+                {currentPersonaCard.subject_line && (
+                  <div className="subject-banner">
+                    <span>Subject:</span>
+                    <strong>{currentPersonaCard.subject_line}</strong>
+                  </div>
+                )}
+
+                {/* The Canvas Content (Diff or Clean) */}
+                <div className="canvas-paper">
+                  {diffMode ? (
+                    <div>
+                      <div style={{ marginBottom: 12 }}>
+                        <DiffLegend />
+                      </div>
+                      <DiffView tokens={currentPersonaCard.diff_tokens} />
+                    </div>
+                  ) : (
+                    currentPersonaCard.rewrite
+                  )}
+                </div>
+
+                {/* Rationale & Risk alerts */}
+                {currentPersonaCard.change_notes?.length > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: 4 }}>Why this changed:</strong>
+                    <ul style={{ paddingLeft: 18 }}>
+                      {currentPersonaCard.change_notes.map((note, idx) => (
+                        <li key={idx} style={{ marginBottom: 2 }}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {currentPersonaCard.risk_flags?.length > 0 && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    background: 'rgba(239,68,68,0.1)',
+                    border: '1px solid rgba(239,68,68,0.25)',
+                    color: '#fca5a5',
+                    fontSize: 12
+                  }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+                    <span><strong>Risk note:</strong> {currentPersonaCard.risk_flags.join(' • ')}</span>
+                  </div>
+                )}
+
+                {/* Floating Canvas Action Bar */}
+                <div className="stage-action-bar">
+                  <div className="action-btn-group">
+                    {/* Diff Toggle */}
+                    <button
+                      type="button"
+                      className={`stage-btn ${diffMode ? 'speaking' : ''}`}
+                      onClick={() => setDiffMode(!diffMode)}
+                      title="Toggle inline word-level diff highlights"
+                    >
+                      <Eye size={12} />
+                      <span>{diffMode ? 'Diff Active' : 'Word Diff'}</span>
+                    </button>
+
+                    {/* Listen with soundwave animation */}
+                    {speaker.supported && (
+                      <button
+                        type="button"
+                        className={`stage-btn ${speaker.speakingId === currentPersonaCard.persona_id ? 'speaking' : ''}`}
+                        onClick={() => speaker.toggle(currentPersonaCard.persona_id, currentPersonaCard.rewrite)}
+                        title="Listen to this persona's voice style"
+                      >
+                        {speaker.speakingId === currentPersonaCard.persona_id ? (
+                          <>
+                            <div className="soundwave">
+                              <span /><span /><span /><span />
+                            </div>
+                            <span>Playing</span>
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 size={12} />
+                            <span>Listen</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    {/* Single Persona Retry */}
+                    <button
+                      type="button"
+                      className="stage-btn"
+                      onClick={() => handleRegenerateSingle(currentPersonaCard.persona_id)}
+                      disabled={regeneratingId === currentPersonaCard.persona_id}
+                      title="Regenerate this specific voice"
+                    >
+                      <RotateCcw size={12} className={regeneratingId === currentPersonaCard.persona_id ? 'animate-spin' : ''} />
+                      <span>Retry</span>
+                    </button>
+                  </div>
+
+                  {/* Copy Button */}
+                  <button
+                    type="button"
+                    className={`stage-btn ${copiedStage ? 'copied' : ''}`}
+                    onClick={() => handleCopyText(currentPersonaCard.rewrite, () => {
+                      setCopiedStage(true);
+                      setTimeout(() => setCopiedStage(false), 2000);
+                    })}
+                  >
+                    {copiedStage ? <Check size={12} /> : <Copy size={12} />}
+                    <span>{copiedStage ? 'Copied!' : 'Copy Rewrite'}</span>
+                  </button>
                 </div>
               </div>
             )}
-          </section>
 
-          {/* Cards Grid */}
-          <main>
-            {loading && !results && (
-              <div className="grid-cards">
-                <PersonaCardSkeleton />
-                <PersonaCardSkeleton />
-                <PersonaCardSkeleton />
-                <PersonaCardSkeleton />
+            {/* STREAM VIEW (All Personas Seamless Flow) */}
+            {stageViewMode === 'stream' && results?.results && (
+              <div className="stream-flow-container animate-tab-enter">
+                {Object.values(results.results).map((item) => {
+                  const color = personaColor(registry, item.persona_id);
+                  return (
+                    <article key={item.persona_id} className="stream-flow-item">
+                      <div className="row-between">
+                        <div className="row-center">
+                          <span style={{ width: 10, height: 10, borderRadius: '50%', background: color }} />
+                          <h3 style={{ fontSize: 17, fontWeight: 800 }}>{item.persona_name}</h3>
+                          <span className="subtle" style={{ fontSize: 12 }}>• {item.tagline}</span>
+                        </div>
+
+                        <div className="row-center">
+                          <span className={`fact-guard-badge ${item.fact_guard_status}`} style={{ fontSize: 11, padding: '3px 8px' }}>
+                            <ShieldCheck size={12} /> {item.fact_guard_status}
+                          </span>
+                          <button
+                            type="button"
+                            className="stage-btn"
+                            style={{ padding: '3px 8px', fontSize: 11 }}
+                            onClick={() => handleCopyText(item.rewrite, () => {
+                              notify(`Copied ${item.persona_name}!`, 'success');
+                            })}
+                          >
+                            <Copy size={11} /> Copy
+                          </button>
+                        </div>
+                      </div>
+
+                      {item.subject_line && (
+                        <div className="subject-banner">
+                          <span>Subject:</span> <strong>{item.subject_line}</strong>
+                        </div>
+                      )}
+
+                      <div style={{ fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+                        {item.rewrite}
+                      </div>
+
+                      <div className="row-between subtle" style={{ fontSize: 11, borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: 10 }}>
+                        <span>Change Score: <strong style={{ color: '#818cf8' }}>{item.metrics.change_score}/100</strong></span>
+                        <span>Formality: <strong>{item.metrics.formality}</strong> • Warmth: <strong>{item.metrics.warmth}</strong> • Brevity: <strong>{item.metrics.brevity}</strong></span>
+                        <span>{item.metrics.reading_level_label}</span>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
 
-            {results && results.results && (
-              <div className="grid-cards">
-                {Object.values(results.results).map((item) => (
-                  <PersonaCard
-                    key={item.persona_id}
-                    item={item}
-                    color={personaColor(registry, item.persona_id)}
-                    viewMode={viewModes[item.persona_id] || 'clean'}
-                    factsOpen={expandedFacts[item.persona_id] || false}
-                    busy={regeneratingId === item.persona_id}
-                    copied={copiedId === item.persona_id}
-                    speaking={speaker.speakingId === item.persona_id}
-                    canSpeak={speaker.supported}
-                    onViewMode={(mode) => setViewModes((prev) => ({ ...prev, [item.persona_id]: mode }))}
-                    onToggleFacts={() => setExpandedFacts((prev) => ({ ...prev, [item.persona_id]: !prev[item.persona_id] }))}
-                    onCopy={() => handleCopyCard(item.persona_id, item.rewrite)}
-                    onSpeak={() => speaker.toggle(item.persona_id, item.rewrite)}
-                    onRegenerate={() => handleRegenerateSingle(item.persona_id)}
-                  />
-                ))}
-              </div>
+            {/* Streamlined Metrics Footer Dock */}
+            {currentPersonaCard && stageViewMode === 'focus' && (
+              <footer className="stage-metrics-dock">
+                <div className="metric-bar-group">
+                  <div className="row-between" style={{ fontSize: 10 }}>
+                    <span className="metric-stat-label">CHANGE SCORE</span>
+                    <strong className="mono" style={{ color: '#818cf8' }}>{currentPersonaCard.metrics.change_score}/100</strong>
+                  </div>
+                  <div className="metric-track">
+                    <div className="metric-fill" style={{ width: `${currentPersonaCard.metrics.change_score}%` }} />
+                  </div>
+                </div>
+
+                <div className="metric-stat-box">
+                  <span className="metric-stat-label">FORMALITY</span>
+                  <span className="metric-stat-value">{currentPersonaCard.metrics.formality}/10</span>
+                </div>
+
+                <div className="metric-stat-box">
+                  <span className="metric-stat-label">WARMTH</span>
+                  <span className="metric-stat-value">{currentPersonaCard.metrics.warmth}/10</span>
+                </div>
+
+                <div className="metric-stat-box">
+                  <span className="metric-stat-label">DIRECTNESS</span>
+                  <span className="metric-stat-value">{currentPersonaCard.metrics.directness}/10</span>
+                </div>
+
+                <div className="metric-stat-box" style={{ textAlign: 'right' }}>
+                  <span className="metric-stat-label">READABILITY</span>
+                  <span className="subtle" style={{ fontSize: 12 }}>{currentPersonaCard.metrics.reading_level_label}</span>
+                </div>
+              </footer>
             )}
           </main>
         </div>
       )}
 
       {/* ============================================================== */}
-      {/* TAB 2: VISUAL RADAR & TONE SHIFT (STEP 1)                      */}
+      {/* TAB 2: TONE TELEMETRY & RADAR                                  */}
       {/* ============================================================== */}
-      {activeTab === 'insights' && (
-        <div>
+      {activeTab === 'radar' && (
+        <div className="telemetry-layout animate-tab-enter">
           {results ? (
-            <InsightsPanel
-              result={results}
-              registry={registry}
-              target={slidersOpen ? slidersToTarget(sliders) : null}
-            />
+            <>
+              <div className="telemetry-pane">
+                <div className="telemetry-pane-header">
+                  <div>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Radar size={18} color="#818cf8" />
+                      <span>Multi-Axis Tone Radar</span>
+                    </h3>
+                    <p className="subtle" style={{ fontSize: 12 }}>Interactive comparison of Formality, Warmth, Brevity, Directness, and Readability</p>
+                  </div>
+                  <span className="stage-btn" style={{ fontSize: 11, cursor: 'default' }}>
+                    {Object.keys(results.results).length} Voices Visualized
+                  </span>
+                </div>
+
+                <InsightsPanel
+                  result={results}
+                  registry={registry}
+                  target={slidersOpen ? slidersToTarget(sliders) : null}
+                />
+              </div>
+
+              <div className="telemetry-pane">
+                <div className="telemetry-pane-header">
+                  <div>
+                    <h3 style={{ fontSize: 16, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Activity size={18} color="#10b981" />
+                      <span>Linguistic Shift Metrics</span>
+                    </h3>
+                    <p className="subtle" style={{ fontSize: 12 }}>Side-by-side behavioral metrics compared against original baseline</p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  {Object.values(results.results).map((c) => {
+                    const color = personaColor(registry, c.persona_id);
+                    return (
+                      <div
+                        key={c.persona_id}
+                        style={{
+                          padding: '14px 18px',
+                          borderRadius: 12,
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border-hairline)',
+                          borderLeft: `4px solid ${color}`
+                        }}
+                      >
+                        <div className="row-between" style={{ marginBottom: 8 }}>
+                          <span style={{ fontWeight: 700, fontSize: 14 }}>{c.persona_name}</span>
+                          <span className="mono" style={{ fontSize: 12, color: '#818cf8' }}>
+                            Score: {c.metrics.change_score}/100
+                          </span>
+                        </div>
+                        <div className="row-between subtle" style={{ fontSize: 12 }}>
+                          <span>Word Count: <strong>{c.metrics.word_count}</strong> ({c.metrics.length_change_pct >= 0 ? '+' : ''}{c.metrics.length_change_pct}%)</span>
+                          <span>Flesch Grade: <strong>{c.metrics.flesch_reading_ease}</strong> ({c.metrics.reading_level_label})</span>
+                          <span>Fact Guard: <strong style={{ color: '#34d399' }}>{c.fact_guard_status}</strong></span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
           ) : (
-            <div className="panel empty-state">
-              Run a transformation first to visualize the Tone Radar and Shift Spectrum.
+            <div className="stage-surface" style={{ padding: 48, textAlign: 'center', gridColumn: '1 / -1' }}>
+              <p className="subtle">Run a transformation in the Studio tab first to view Tone Radar Telemetry.</p>
             </div>
           )}
         </div>
       )}
 
       {/* ============================================================== */}
-      {/* TAB 3: DUAL COMPARE MODE (STEP 2)                              */}
+      {/* TAB 3: CROSS-DIFF INSPECTOR                                    */}
       {/* ============================================================== */}
       {activeTab === 'compare' && (
-        <div>
+        <div className="compare-layout animate-tab-enter">
           {results ? (
             <CompareView
               result={results}
@@ -684,137 +1106,188 @@ export default function App() {
               onToast={notify}
             />
           ) : (
-            <div className="panel empty-state">
-              Run a transformation first to compare personas side-by-side.
+            <div style={{ padding: 48, textAlign: 'center', color: '#94a3b8' }}>
+              <p>Run a transformation first to compare personas in the Cross-Diff Inspector.</p>
             </div>
           )}
         </div>
       )}
 
       {/* ============================================================== */}
-      {/* TAB 4: TONE DECODER (REVERSE MODE)                             */}
+      {/* TAB 4: REVERSE SUBTEXT DECODER                                 */}
       {/* ============================================================== */}
       {activeTab === 'decoder' && (
-        <div className="stack">
-          <section className="panel stack" style={{ gap: 16 }}>
+        <div className="decoder-terminal animate-tab-enter">
+          <section className="decoder-input-panel">
             <div className="row-between">
               <div>
-                <h3 className="panel-title">
-                  <Search size={18} color="#818cf8" /> Tone Decoder &amp; Subtext Analyzer (Reverse Mode)
+                <h3 style={{ fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Search size={18} color="#818cf8" />
+                  <span>Subtext Decoder &amp; Tactical Reply Engine (Reverse Mode)</span>
                 </h3>
-                <p className="tiny subtle" style={{ marginTop: 2 }}>
-                  Paste any ambiguous email or chat message to reveal hidden subtext, risks, and tactical response strategies.
+                <p className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
+                  Paste any ambiguous email, Slack message, or chat to reveal hidden subtext, emotional urgency, and 3 strategic response postures.
                 </p>
               </div>
 
-              {/* Decoder Presets */}
-              <div className="row" style={{ gap: 6 }}>
-                {DECODER_PRESETS.map((preset, idx) => (
+              {/* Sample Presets */}
+              <div className="row-center">
+                <span className="subtle" style={{ fontSize: 11 }}>Presets:</span>
+                {DECODER_PRESETS.map((p, i) => (
                   <button
-                    key={idx}
+                    key={i}
                     type="button"
-                    className="btn"
-                    style={{ fontSize: 11 }}
+                    className="stage-btn"
+                    style={{ fontSize: 11, padding: '3px 8px' }}
                     onClick={() => {
-                      setDecoderInput(preset);
-                      handleDecode(preset);
+                      setDecoderInput(p);
+                      handleDecode(p);
                     }}
                   >
-                    Sample {idx + 1}
+                    Sample {i + 1}
                   </button>
                 ))}
               </div>
             </div>
 
             <textarea
-              className="textarea"
+              className="prompt-textarea"
+              style={{ background: 'var(--bg-input)', padding: 14, borderRadius: 10, border: '1px solid var(--border-hairline)' }}
               rows={3}
               value={decoderInput}
               onChange={(e) => setDecoderInput(e.target.value)}
-              placeholder="Paste ambiguous message here (e.g. 'Per my last email, please fix this ASAP or I will escalate to the VP.')..."
+              placeholder="Paste incoming message to decode (e.g. 'Per my last email, please fix this ASAP or I will escalate to the VP.')..."
             />
 
-            <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <div className="row-between">
+              <span className="subtle" style={{ fontSize: 12 }}>Shortcut: ⌘ Enter</span>
               <button
                 type="button"
-                className="btn btn-primary"
+                className="btn-prism-run"
+                style={{ width: 'auto', padding: '10px 24px' }}
                 onClick={() => handleDecode()}
                 disabled={decoderLoading}
               >
-                <Search size={15} className={decoderLoading ? 'animate-spin' : ''} />
-                {decoderLoading ? 'Analyzing Subtext...' : 'Decode Subtext & Strategies'}
+                <Search size={14} className={decoderLoading ? 'animate-spin' : ''} />
+                <span>{decoderLoading ? 'Decoding Subtext...' : 'Decode True Subtext'}</span>
               </button>
             </div>
           </section>
 
-          {/* Decoder Results */}
+          {/* Decoded Insights Grid */}
           {decoderResult && (
-            <div className="grid-2">
-              {/* Meaning & Emotional Analysis */}
-              <div className="panel stack" style={{ gap: 14 }}>
-                <h3 className="panel-title" style={{ fontSize: 14 }}>
-                  <ShieldCheck size={16} color="#10b981" /> Linguistic Breakdown
-                </h3>
-
-                <div className="inset">
-                  <span className="tiny subtle" style={{ display: 'block', marginBottom: 2 }}>Surface Meaning</span>
-                  <p style={{ fontSize: 13 }}>{decoderResult.surface_meaning}</p>
+            <div className="decoder-output-grid animate-tab-enter">
+              {/* Intent & Risk Column */}
+              <div className="decoder-insight-column">
+                <div className="row-between" style={{ borderBottom: '1px solid var(--border-hairline)', paddingBottom: 10 }}>
+                  <h4 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <ShieldCheck size={16} color="#10b981" />
+                    <span>Linguistic Analysis</span>
+                  </h4>
                 </div>
 
-                <div className="inset" style={{ borderColor: 'rgba(99, 102, 241, 0.4)' }}>
-                  <span className="tiny" style={{ color: '#818cf8', fontWeight: 700, display: 'block', marginBottom: 2 }}>
-                    🕵️ Actual Subtext &amp; True Intent
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="subtle" style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700 }}>Surface Meaning</span>
+                  <p style={{ fontSize: 14, background: 'var(--bg-input)', padding: 12, borderRadius: 8, border: '1px solid var(--border-hairline)' }}>
+                    {decoderResult.surface_meaning}
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700, color: '#818cf8' }}>
+                    🕵️ True Subtext &amp; Unspoken Intent
                   </span>
-                  <p style={{ fontSize: 13, fontWeight: 500 }}>{decoderResult.subtext}</p>
+                  <p style={{ fontSize: 14, fontWeight: 500, background: 'rgba(99,102,241,0.08)', padding: 14, borderRadius: 8, border: '1px solid rgba(99,102,241,0.25)' }}>
+                    {decoderResult.subtext}
+                  </p>
                 </div>
 
-                <div className="row-between inset">
+                <div className="row-between" style={{ background: 'var(--bg-input)', padding: 12, borderRadius: 8, border: '1px solid var(--border-hairline)' }}>
                   <div>
-                    <span className="tiny subtle">Emotional Temperature</span>
-                    <strong style={{ display: 'block', fontSize: 14, color: '#f59e0b' }}>
-                      {decoderResult.emotional_temperature}
-                    </strong>
+                    <span className="subtle" style={{ fontSize: 10, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>Emotional Thermometer</span>
+                    <strong style={{ color: '#f59e0b', fontSize: 14 }}>{decoderResult.emotional_temperature}</strong>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <span className="tiny subtle">Urgency Level</span>
-                    <strong style={{ display: 'block', fontSize: 14, color: '#ec4899' }}>
-                      {decoderResult.urgency_level}
-                    </strong>
+                    <span className="subtle" style={{ fontSize: 10, textTransform: 'uppercase', fontWeight: 700, display: 'block' }}>Urgency Level</span>
+                    <strong style={{ color: '#ec4899', fontSize: 14 }}>{decoderResult.urgency_level}</strong>
                   </div>
                 </div>
 
                 {decoderResult.hidden_motives && (
-                  <div className="risk" style={{ background: 'rgba(245, 158, 11, 0.1)', borderColor: 'rgba(245, 158, 11, 0.3)', color: '#fbbf24' }}>
-                    <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-                    <span><strong>Hidden Motive / Risk:</strong> {decoderResult.hidden_motives}</span>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                    padding: 12,
+                    borderRadius: 8,
+                    background: 'rgba(245,158,11,0.1)',
+                    border: '1px solid rgba(245,158,11,0.3)',
+                    color: '#fbbf24',
+                    fontSize: 12
+                  }}>
+                    <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span><strong>Hidden Motive / Escalation Risk:</strong> {decoderResult.hidden_motives}</span>
                   </div>
                 )}
               </div>
 
               {/* Ready-to-Send Tactical Replies */}
-              <div className="panel stack" style={{ gap: 14 }}>
-                <h3 className="panel-title" style={{ fontSize: 14 }}>
-                  <Send size={16} color="#818cf8" /> Ready-to-Send Tactical Responses
-                </h3>
-                <p className="tiny subtle">Choose the posture that best fits your relationship with the sender:</p>
+              <div className="decoder-insight-column">
+                <div className="row-between" style={{ borderBottom: '1px solid var(--border-hairline)', paddingBottom: 10 }}>
+                  <h4 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Send size={16} color="#818cf8" />
+                    <span>Ready-to-Send Tactical Responses</span>
+                  </h4>
+                  <span className="subtle" style={{ fontSize: 11 }}>1-click copy</span>
+                </div>
 
-                {decoderResult.recommended_responses && decoderResult.recommended_responses.map((reply, i) => (
-                  <div key={i} className="inset stack" style={{ gap: 6, position: 'relative' }}>
-                    <div className="row-between">
-                      <span className="badge badge-accent">{reply.strategy}</span>
-                      <button
-                        type="button"
-                        className={`btn ${copiedReplyIdx === i ? 'btn-success' : ''}`}
-                        style={{ padding: '2px 8px', fontSize: 11 }}
-                        onClick={() => handleCopyReply(i, reply.text)}
-                      >
-                        {copiedReplyIdx === i ? <Check size={11} /> : <Copy size={11} />}
-                        {copiedReplyIdx === i ? 'Copied' : 'Copy'}
-                      </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {decoderResult.recommended_responses?.map((reply, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: 14,
+                        borderRadius: 10,
+                        background: 'var(--bg-input)',
+                        border: '1px solid var(--border-hairline)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8
+                      }}
+                    >
+                      <div className="row-between">
+                        <span style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: 999,
+                          background: 'rgba(99,102,241,0.15)',
+                          color: '#a5b4fc',
+                          textTransform: 'uppercase'
+                        }}>
+                          {reply.strategy}
+                        </span>
+
+                        <button
+                          type="button"
+                          className="stage-btn"
+                          style={{ padding: '3px 8px', fontSize: 11 }}
+                          onClick={() => handleCopyText(reply.text, () => {
+                            setCopiedReplyIdx(idx);
+                            setTimeout(() => setCopiedReplyIdx(null), 2000);
+                          })}
+                        >
+                          {copiedReplyIdx === idx ? <Check size={11} /> : <Copy size={11} />}
+                          <span>{copiedReplyIdx === idx ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      </div>
+
+                      <p style={{ fontSize: 13, lineHeight: 1.6, color: '#f1f5f9' }}>
+                        "{reply.text}"
+                      </p>
                     </div>
-                    <p style={{ fontSize: 13, lineHeight: 1.5 }}>"{reply.text}"</p>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -822,32 +1295,250 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* TAB 5: HISTORY & SAVED (STEP 3)                                */}
+      {/* TAB 5: PERSONA FOUNDRY (CUSTOM BUILDER WORKSPACE)              */}
       {/* ============================================================== */}
-      {activeTab === 'history' && (
-        <HistoryPanel
-          history={history}
-          onSelectEntry={(entry) => {
-            setDraft(entry.draft);
-            if (entry.result) setResults(entry.result);
-            setActiveTab('generator');
-            notify('Loaded transformation from history!', 'info');
-          }}
-          onToast={notify}
-        />
+      {activeTab === 'foundry' && (
+        <div className="foundry-layout animate-tab-enter">
+          {/* Creator Pane */}
+          <div className="foundry-creator">
+            <div>
+              <h3 style={{ fontSize: 18, fontWeight: 800 }}>Create Custom Persona</h3>
+              <p className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
+                Define a unique communication identity with custom tone instructions.
+              </p>
+            </div>
+
+            <form onSubmit={handleCreateCustomPersona} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label className="subtle" style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>
+                  PERSONA NAME
+                </label>
+                <input
+                  type="text"
+                  className="control-select"
+                  style={{ width: '100%', padding: '10px 14px', fontSize: 14 }}
+                  value={foundryName}
+                  onChange={(e) => setFoundryName(e.target.value)}
+                  placeholder="e.g. Professor Email, Placement HR, Investor..."
+                />
+              </div>
+
+              <div>
+                <label className="subtle" style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 4 }}>
+                  TONE &amp; STYLISTIC INSTRUCTIONS
+                </label>
+                <textarea
+                  className="prompt-textarea"
+                  style={{ background: 'var(--bg-input)', padding: 12, borderRadius: 8, border: '1px solid var(--border-hairline)', minHeight: 120 }}
+                  value={foundryDesc}
+                  onChange={(e) => setFoundryDesc(e.target.value)}
+                  placeholder="e.g. Academic and polite tone, states facts clearly, asks for extension respectfully while acknowledging deadline..."
+                />
+              </div>
+
+              <button type="submit" className="btn-prism-run">
+                <Plus size={16} />
+                <span>Save to Persona Registry</span>
+              </button>
+            </form>
+
+            {/* Quick College & Career Templates */}
+            <div style={{ marginTop: 10 }}>
+              <span className="subtle" style={{ fontSize: 11, fontWeight: 700, display: 'block', marginBottom: 8 }}>
+                OR START FROM A PRESET TEMPLATE:
+              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {COLLEGE_TEMPLATES.map((tpl, i) => (
+                  <div key={i} className="template-card-row">
+                    <div>
+                      <strong style={{ fontSize: 13, display: 'block' }}>{tpl.name}</strong>
+                      <span className="subtle" style={{ fontSize: 11 }}>{tpl.tagline}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="stage-btn"
+                      style={{ padding: '4px 10px', fontSize: 11 }}
+                      onClick={() => handleApplyFoundryTemplate(tpl)}
+                    >
+                      Use Template
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Active Custom Personas Library */}
+          <div className="foundry-library">
+            <div className="row-between" style={{ borderBottom: '1px solid var(--border-hairline)', paddingBottom: 10 }}>
+              <div>
+                <h3 style={{ fontSize: 18, fontWeight: 800 }}>Active Custom Personas ({customPersonas.length})</h3>
+                <p className="subtle" style={{ fontSize: 12 }}>These appear alongside built-ins in the Studio workspace.</p>
+              </div>
+            </div>
+
+            {customPersonas.length === 0 ? (
+              <div style={{ padding: 48, textAlign: 'center', color: '#94a3b8' }}>
+                <p>No custom personas created yet.</p>
+                <p className="subtle" style={{ fontSize: 12, marginTop: 4 }}>Choose a template on the left or create one from scratch.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {customPersonas.map((p) => {
+                  const color = personaColor(registry, p.id);
+                  return (
+                    <div
+                      key={p.id}
+                      style={{
+                        padding: 16,
+                        borderRadius: 12,
+                        background: 'var(--bg-input)',
+                        border: '1px solid var(--border-hairline)',
+                        borderLeft: `4px solid ${color}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8
+                      }}
+                    >
+                      <div className="row-between">
+                        <div className="row-center">
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
+                          <strong style={{ fontSize: 15 }}>{p.name}</strong>
+                          <span className="subtle" style={{ fontSize: 11 }}>({p.id})</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="stage-btn"
+                          style={{ padding: '3px 8px', color: '#fca5a5' }}
+                          onClick={() => handleDeleteCustomPersona(p.id)}
+                          title="Delete persona"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                      <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                        {p.description}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
-      {/* Custom Persona Builder Modal (Step 5) */}
-      <CustomPersonaModal
-        isOpen={customModalOpen}
-        onClose={() => setCustomModalOpen(false)}
-        customPersonas={customPersonas}
-        onSave={handleAddCustomPersona}
-        onDelete={handleDeleteCustomPersona}
-        onToast={notify}
-      />
+      {/* ============================================================== */}
+      {/* TAB 6: HISTORY & VAULT                                         */}
+      {/* ============================================================== */}
+      {activeTab === 'vault' && (
+        <div className="vault-layout animate-tab-enter">
+          <div className="vault-header">
+            <div>
+              <h3 style={{ fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <History size={18} color="#818cf8" />
+                <span>Transformation Vault</span>
+              </h3>
+              <p className="subtle" style={{ fontSize: 12 }}>
+                Locally persisted transformations • Starred items are preserved indefinitely
+              </p>
+            </div>
 
-      {/* Toast Stack */}
+            <div className="row-center">
+              <input
+                type="text"
+                placeholder="Search history..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                className="control-select"
+                style={{ width: 180 }}
+              />
+
+              <button
+                type="button"
+                className={`stage-btn ${filterStarredOnly ? 'speaking' : ''}`}
+                onClick={() => setFilterStarredOnly(!filterStarredOnly)}
+              >
+                <Star size={13} fill={filterStarredOnly ? '#fbbf24' : 'none'} color={filterStarredOnly ? '#fbbf24' : 'currentColor'} />
+                <span>{filterStarredOnly ? 'Starred Only' : 'All'}</span>
+              </button>
+
+              {history.items.length > 0 && (
+                <button
+                  type="button"
+                  className="stage-btn"
+                  style={{ color: '#fca5a5' }}
+                  onClick={() => {
+                    history.clearUnstarred();
+                    notify('Cleared unstarred history items.', 'info');
+                  }}
+                >
+                  <Trash2 size={12} /> Clear Unstarred
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="vault-timeline">
+            {filteredHistory.length === 0 ? (
+              <div style={{ padding: 48, textAlign: 'center', color: '#94a3b8' }}>
+                <p>No history entries found.</p>
+              </div>
+            ) : (
+              filteredHistory.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="vault-item-row"
+                  onClick={() => {
+                    setDraft(entry.draft);
+                    if (entry.result) setResults(entry.result);
+                    setActiveTab('studio');
+                    notify('Loaded transformation into Studio!', 'info');
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="row-center" style={{ marginBottom: 4 }}>
+                      <span className="mono subtle" style={{ fontSize: 11 }}>
+                        {new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
+                        {entry.channel}
+                      </span>
+                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)' }}>
+                        {entry.language}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      "{entry.draft}"
+                    </p>
+                  </div>
+
+                  <div className="row-center" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="stage-btn"
+                      style={{ padding: '6px 10px' }}
+                      onClick={() => history.toggleStar(entry.id)}
+                    >
+                      <Star size={13} fill={entry.starred ? '#fbbf24' : 'none'} color={entry.starred ? '#fbbf24' : '#94a3b8'} />
+                    </button>
+                    <button
+                      type="button"
+                      className="stage-btn"
+                      style={{ padding: '6px 10px', color: '#fca5a5' }}
+                      onClick={() => history.remove(entry.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Toast Stack */}
       <ToastStack toasts={toasts} />
     </div>
   );
