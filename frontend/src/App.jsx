@@ -5,7 +5,8 @@ import {
   Search, History, AlertTriangle, Send, Copy, Check, FileText,
   Volume2, Eye, LayoutList, CheckCircle2, ChevronRight, ArrowRight,
   TrendingUp, Terminal, Star, Trash2, Zap, GraduationCap, Briefcase,
-  Megaphone, UserCheck, Mail, MessageSquare, MessageCircle, Smartphone
+  Megaphone, UserCheck, Mail, MessageSquare, MessageCircle, Smartphone,
+  Sun, Moon
 } from 'lucide-react';
 
 import {
@@ -80,6 +81,13 @@ function getChannelIcon(channelId) {
 export default function App() {
   const { toasts, notify } = useToasts();
   const history = useHistory();
+
+  // Theme: 'light' | 'dark' (Defaulting to light studio background with proper highlights)
+  const [theme, setTheme] = usePersistentState('prismtone.theme.v1', 'light');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
 
   // Navigation tab: 'studio' | 'radar' | 'compare' | 'decoder' | 'foundry' | 'vault'
   const [activeTab, setActiveTab] = useState('studio');
@@ -410,6 +418,17 @@ export default function App() {
               </button>
             </>
           )}
+
+          {/* Theme Switcher Toggle */}
+          <button
+            type="button"
+            className="stage-btn"
+            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} theme`}
+          >
+            {theme === 'light' ? <Moon size={13} /> : <Sun size={13} />}
+            <span>{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+          </button>
 
           {/* Model Status Telemetry */}
           <div

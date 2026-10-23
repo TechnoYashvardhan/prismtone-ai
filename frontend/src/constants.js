@@ -12,7 +12,7 @@ export const BUILT_IN_PERSONAS = [
 // Colors assigned to user-created personas, in order.
 export const CUSTOM_COLORS = ['#a855f7', '#06b6d4', '#84cc16', '#f97316'];
 
-export const ORIGINAL_COLOR = '#e2e8f0';
+export const ORIGINAL_COLOR = 'var(--original-series-color, #94a3b8)';
 
 export const PRESETS = [
   { id: 'vibeathon_official', title: 'Vibeathon Outage Demo', icon: 'zap', draft: "Server went down, it's Raj's fault, fix by Friday." },

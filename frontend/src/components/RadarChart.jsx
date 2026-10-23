@@ -33,7 +33,7 @@ export default function RadarChart({ series }) {
             key={ring}
             points={RADAR_AXES.map((_, i) => point(i, ring, total).join(',')).join(' ')}
             fill="none"
-            stroke="rgba(255,255,255,0.08)"
+            stroke="var(--radar-ring, rgba(255,255,255,0.08))"
           />
         ))}
         {RADAR_AXES.map((axis, i) => {
@@ -42,8 +42,8 @@ export default function RadarChart({ series }) {
           const active = hoverAxis === axis.key;
           return (
             <g key={axis.key} onMouseEnter={() => setHoverAxis(axis.key)} onMouseLeave={() => setHoverAxis(null)} style={{ cursor: 'help' }}>
-              <line x1={CENTER} y1={CENTER} x2={x} y2={y} stroke={active ? 'rgba(165,180,252,0.6)' : 'rgba(255,255,255,0.1)'} />
-              <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fontSize="11" fontWeight="700" fill={active ? '#c7d2fe' : '#94a3b8'}>
+              <line x1={CENTER} y1={CENTER} x2={x} y2={y} stroke={active ? 'var(--accent-light, #818cf8)' : 'var(--radar-axis, rgba(255,255,255,0.1))'} />
+              <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fontSize="11" fontWeight="700" fill={active ? 'var(--accent-light, #818cf8)' : 'var(--radar-label, #94a3b8)'}>
                 {axis.label}
               </text>
             </g>
