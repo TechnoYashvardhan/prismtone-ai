@@ -30,3 +30,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 ai-prompt-governance-kit.zip
+
+.vite/
+frontend/.vite/
